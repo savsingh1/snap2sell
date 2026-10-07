@@ -8,7 +8,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/ai_analysis_result.dart';
 import '../models/item.dart';
+import '../services/ai_logger.dart';
 import '../services/ai_service.dart';
+import '../services/image_service.dart';
 import '../services/listing_service.dart';
 import '../services/storage_service.dart';
 
@@ -28,15 +30,18 @@ class AppState extends ChangeNotifier {
     ListingService? listing,
     AiService? aiService,
     ImagePicker? imagePicker,
+    ImageService? imageService,
   })  : _storage = storage ?? LocalStorageService(),
         _listing = listing ?? ListingService(),
         _aiService = aiService ?? AiServiceFactory.create(),
-        _imagePicker = imagePicker ?? ImagePicker();
+        _imagePicker = imagePicker ?? ImagePicker(),
+        _imageService = imageService ?? ImageService();
 
   final StorageService _storage;
   final ListingService _listing;
   final AiService _aiService;
   final ImagePicker _imagePicker;
+  final ImageService _imageService;
 
   List<Item> _items = [];
   Item? _currentItem;
@@ -154,9 +159,10 @@ class AppState extends ChangeNotifier {
     return analyzePhotoBytes(bytes, savedPath: savedPath);
   }
 
-  /// Runs the AI pipeline on raw photo [bytes]. Separated from
-  /// [pickAndAnalyze] so the analysis/failure path is unit-testable without
-  /// the image picker or filesystem.
+  /// Runs the AI pipeline on raw photo [bytes]. The photo is compressed and
+  /// normalized first (see [ImageService]), then sent to the backend.
+  /// Separated from [pickAndAnalyze] so the analysis/failure path is
+  /// unit-testable without the image picker or filesystem.
   @visibleForTesting
   Future<Item?> analyzePhotoBytes(
     Uint8List bytes, {
@@ -180,7 +186,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final result = await _runPipelineWithSteps(bytes);
+      // Phase 3: normalize the photo (EXIF orientation, longest side 1536,
+      // JPEG q80) so giant camera images never break the upload and the
+      // backend always gets a clean, honest MIME type.
+      final processed = _imageService.process(bytes);
+      final result = await _runPipelineWithSteps(processed.bytes);
       _currentItem = _currentItem!.copyWith(
         title: result.title,
         category: result.category,
@@ -191,10 +201,15 @@ class AppState extends ChangeNotifier {
         description: result.description,
         status: ListingStatus.draft,
       );
+    } on ImageProcessingException {
+      _handleAnalysisFailure(AiServiceException(
+        'Unreadable photo.',
+        category: AiErrorCategory.badImage,
+      ));
     } on AiServiceException catch (e) {
       // Live backend failed — never invent a listing. Keep the photo and any
-      // user-entered details, clear AI placeholders, and surface the reason
-      // so the user can retry or enter details manually.
+      // user-entered details, clear AI placeholders, and surface a friendly,
+      // non-technical reason so the user can retry or enter details manually.
       _handleAnalysisFailure(e);
     } finally {
       _isAnalyzing = false;
@@ -214,7 +229,9 @@ class AppState extends ChangeNotifier {
     _analysisError = null;
     notifyListeners();
     try {
-      final result = await _runPipelineWithSteps(bytes);
+      // Compress the original photo again (same as the first attempt).
+      final processed = _imageService.process(bytes);
+      final result = await _runPipelineWithSteps(processed.bytes);
       _currentItem = _currentItem!.copyWith(
         title: result.title,
         category: result.category,
@@ -225,6 +242,11 @@ class AppState extends ChangeNotifier {
         description: result.description,
         status: ListingStatus.draft,
       );
+    } on ImageProcessingException {
+      _handleAnalysisFailure(AiServiceException(
+        'Unreadable photo.',
+        category: AiErrorCategory.badImage,
+      ));
     } on AiServiceException catch (e) {
       _handleAnalysisFailure(e);
     } finally {
@@ -243,10 +265,17 @@ class AppState extends ChangeNotifier {
   /// Failure path shared by [pickAndAnalyze] and [retryAnalysis]: the photo
   /// and user-entered details survive, AI placeholders are cleared, and no
   /// demo/fake listing is ever generated.
+  ///
+  /// SECURITY: only [AiServiceException.friendlyMessage] reaches the UI.
+  /// Raw error text (which could contain URLs or technical details) is
+  /// logged internally via [AiLogger] and never shown to the user.
   void _handleAnalysisFailure(AiServiceException e) {
-    debugPrint('Live AI failed: $e');
-    final reason =
-        e.message.length > 240 ? '${e.message.substring(0, 240)}…' : e.message;
+    AiLogger.failure(
+      category: e.category,
+      durationMs: 0,
+      attempts: 0,
+      detail: 'ui-surfaced',
+    );
     final currentTitle = _currentItem?.title;
     _currentItem = _currentItem?.copyWith(
       title: (currentTitle == null || currentTitle == 'Analyzing…')
@@ -258,7 +287,7 @@ class AppState extends ChangeNotifier {
       suggestedPrice: 0,
       status: ListingStatus.draft,
     );
-    _analysisError = 'Could not analyze this photo ($reason)';
+    _analysisError = e.friendlyMessage;
   }
 
   /// Drives the visible step indicator while the AI call runs.
