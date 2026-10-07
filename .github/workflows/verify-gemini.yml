@@ -1,0 +1,79 @@
+name: verify-gemini-model
+
+# Manual smoke test: proves which Gemini model accepts image input and returns
+# a valid listing JSON, using the repo's GEMINI_API_KEY secret.
+# The key is passed only as an env var and NEVER printed or logged.
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe candidate models with a real image request
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 - <<'PYEOF'
+          import base64, io, json, os, sys, urllib.request, urllib.error
+
+          try:
+              from PIL import Image, ImageDraw
+          except ImportError:
+              os.system(f"{sys.executable} -m pip install -q pillow")
+              from PIL import Image, ImageDraw
+
+          key = os.environ["GEMINI_API_KEY"]
+          assert key and len(key) > 10, "GEMINI_API_KEY secret is missing!"
+
+          # Build a small synthetic test image (wallet-like card with text).
+          img = Image.new("RGB", (320, 240), (210, 190, 160))
+          d = ImageDraw.Draw(img)
+          d.rectangle([90, 60, 230, 180], fill=(120, 80, 50), outline=(60, 40, 20), width=4)
+          d.rectangle([150, 105, 190, 135], fill=(200, 170, 120), outline=(60, 40, 20), width=2)
+          d.text((100, 190), "TEST WALLET", fill=(40, 40, 40))
+          buf = io.BytesIO()
+          img.save(buf, format="JPEG", quality=70)
+          b64 = base64.b64encode(buf.getvalue()).decode()
+
+          payload = {
+              "contents": [{
+                  "parts": [
+                      {"text": 'Analyze this item. Respond with ONLY a JSON object: {"title": string, "category": string, "condition": string, "priceLow": number, "priceHigh": number, "suggestedPrice": number, "description": string}.'},
+                      {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
+                  ]
+              }],
+              "generationConfig": {"responseMimeType": "application/json", "temperature": 0.2},
+          }
+
+          candidates = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.8-flash"]
+          working = []
+          for model in candidates:
+              url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+                     f"{model}:generateContent?key={key}")
+              req = urllib.request.Request(
+                  url, data=json.dumps(payload).encode(),
+                  headers={"Content-Type": "application/json"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as resp:
+                      body = json.loads(resp.read().decode())
+                  text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
+                  if text.startswith("```"):
+                      text = text.strip("`").replace("json", "", 1).strip()
+                  listing = json.loads(text)
+                  ok = all(k in listing for k in
+                           ("title", "category", "condition", "priceLow",
+                            "priceHigh", "suggestedPrice", "description"))
+                  print(f"MODEL={model} STATUS=200 VALID_JSON_FIELDS={ok} "
+                        f"TITLE={listing.get('title', '')[:60]}", flush=True)
+                  if ok:
+                      working.append(model)
+              except urllib.error.HTTPError as e:
+                  err = e.read().decode()[:160].replace("\n", " ")
+                  print(f"MODEL={model} STATUS={e.code} ERROR={err}", flush=True)
+              except Exception as e:
+                  print(f"MODEL={model} STATUS=EXCEPTION ERROR={str(e)[:160]}", flush=True)
+
+          print(f"WORKING_MODELS={','.join(working) if working else 'NONE'}", flush=True)
+          sys.exit(0 if working else 1)
+          PYEOF
