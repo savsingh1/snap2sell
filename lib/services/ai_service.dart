@@ -125,7 +125,7 @@ class MockAiService implements AiService {
 class GeminiVisionService implements AiService {
   GeminiVisionService({
     required this.apiKey,
-    this.model = 'gemini-3.6-flash',
+    this.model = 'gemini-3.8-flash',
     http.Client? client,
   }) : _client = client ?? http.Client();
 
@@ -136,9 +136,9 @@ class GeminiVisionService implements AiService {
   /// Fallback models tried in order when the preferred model 404s
   /// (Google retires models regularly — e.g. gemini-2.5-flash in Oct 2026).
   static const List<String> _fallbackModels = [
+    'gemini-3.8-flash',
     'gemini-3.6-flash',
     'gemini-3.5-flash',
-    'gemini-3.8-flash',
   ];
 
   static const String _systemPrompt = """
