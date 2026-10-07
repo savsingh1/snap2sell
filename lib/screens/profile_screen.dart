@@ -5,6 +5,7 @@ import '../app_theme.dart';
 import '../models/item.dart';
 import '../providers/app_state.dart';
 import '../widgets/capture_helpers.dart';
+import 'payment_methods_screen.dart';
 
 /// Step 7: profile — account, payment methods, past listings, help.
 class ProfileScreen extends StatelessWidget {
@@ -88,8 +89,16 @@ class ProfileScreen extends StatelessWidget {
                 _Tile(
                   icon: Icons.payments_rounded,
                   title: 'Payment Methods',
-                  subtitle: 'Add payout accounts for sold items',
-                  onTap: () => showComingSoon(context, 'Payment methods'),
+                  subtitle: appState.hasPayoutPrefs
+                      ? (appState.payoutEmail.isNotEmpty
+                          ? appState.payoutEmail
+                          : 'Payout details saved')
+                      : 'Add payout accounts for sold items',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const PaymentMethodsScreen(),
+                    ),
+                  ),
                 ),
                 const Divider(height: 1, indent: 16, endIndent: 16),
                 _Tile(
