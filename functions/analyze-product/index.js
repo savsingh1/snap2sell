@@ -8,6 +8,10 @@
  * Secret Manager (mounted as GEMINI_API_KEY) and NEVER ships in the app.
  *
  *   POST /  { "imageBase64": "<base64>", "mimeType": "image/jpeg" }
+ *   POST /  { "images": ["<base64>", ...up to 5], "mimeType": "image/jpeg" }
+ *           (multi-photo: all photos must show the SAME item; the AI
+ *           cross-checks details across them. The single-image field above
+ *           keeps working exactly as before.)
  *   -> 200  { ...product identification JSON..., "_meta": {...} }
  *   -> 4xx/5xx { "error": { "category": "...", "message": "..." } }
  *
@@ -24,8 +28,9 @@ const sharp = require('sharp');
 const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'];
 const APP_SECRET = process.env.APP_API_SECRET || '';
-const MAX_BODY_BYTES = 3 * 1024 * 1024; // 3 MB is plenty for a compressed photo
+const MAX_BODY_BYTES = 12 * 1024 * 1024; // 12 MB: room for up to 5 photos
 const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024;
+const MAX_IMAGES = 5; // multi-photo cap per request
 
 // ---- per-IP rate limiting (instance-local; good enough as abuse friction)
 const _hits = new Map(); // ip -> array of epoch ms
@@ -88,6 +93,20 @@ Respond with ONLY a single JSON object (no markdown fences, no commentary) with 
 "confidence" is 0-100. Below 60 set needs_more_photos=true and list the exact shots that would help, e.g. "Take a photo of the model-number label.", "Take a photo of the front of the product.", "Take a photo of the bottom sticker.", "Take a photo of the packaging."`;
 
 // ---------------------------------------------------------------------------
+// Multi-photo addendum — appended to SYSTEM_PROMPT ONLY when the request
+// carries more than one photo. The single-photo path uses SYSTEM_PROMPT
+// alone, exactly as before, so its behavior is unchanged.
+// ---------------------------------------------------------------------------
+const MULTI_PHOTO_ADDENDUM = `
+
+MULTI-PHOTO MODE: you were given {N} photos. They are supposed to show the SAME item for sale — use them together:
+- Identify the item using the clearest photo(s). Cross-check details across ALL photos: brand marks, model numbers, labels, colors, materials, accessories.
+- If a model number, label, or brand mark is legible in ANY photo, use it. You still must NEVER invent a model number that is not visible.
+- Assess condition from every photo, including close-up/detail shots. Report damage visible in any photo in visible_damage.
+- If the photos clearly show DIFFERENT items (not just different angles of one item), set recognized=false and a low confidence, and explain in recommended_photos that the photos seem to show different items and should be retaken of the same item.
+- All honesty rules above still apply to every photo.`;
+
+// ---------------------------------------------------------------------------
 // Gemini call with retry — transient failures only.
 // ---------------------------------------------------------------------------
 const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -105,18 +124,17 @@ class GeminiError extends Error {
   }
 }
 
-async function callGemini(apiKey, model, jpegBase64, startedAt) {
+async function callGemini(apiKey, model, jpegBase64List, promptText, startedAt) {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  // Single photo: parts are [{ text: SYSTEM_PROMPT }, { inline_data }] —
+  // identical to the original single-image request.
+  const parts = [{ text: promptText }];
+  for (const b64 of jpegBase64List) {
+    parts.push({ inline_data: { mime_type: 'image/jpeg', data: b64 } });
+  }
   const body = JSON.stringify({
-    contents: [
-      {
-        parts: [
-          { text: SYSTEM_PROMPT },
-          { inline_data: { mime_type: 'image/jpeg', data: jpegBase64 } },
-        ],
-      },
-    ],
+    contents: [{ parts }],
     generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
   });
 
@@ -240,40 +258,72 @@ functions.http('analyzeProduct', async (req, res) => {
     if (rawLen > MAX_BODY_BYTES) {
       return res.status(413).json({ error: { category: 'BAD_IMAGE', message: 'Photo is too large. Try a smaller image.' } });
     }
-    const { imageBase64, mimeType } = req.body || {};
-    if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
-      return res.status(400).json({ error: { category: 'BAD_IMAGE', message: 'No photo was received. Try again.' } });
-    }
-    if (imageBase64.length > MAX_IMAGE_BYTES * 1.4) {
-      return res.status(413).json({ error: { category: 'BAD_IMAGE', message: 'Photo is too large. Try a smaller image.' } });
+    const { imageBase64, images, mimeType } = req.body || {};
+    // Multi-photo requests carry { images: [<base64>, ...] }. When that
+    // field is absent, the original single-image path below runs with its
+    // exact original validation and behavior.
+    const multiMode = Array.isArray(images) && images.length > 0;
+    let imageInputs;
+    if (multiMode) {
+      if (images.length > MAX_IMAGES) {
+        return res.status(400).json({ error: { category: 'BAD_IMAGE', message: `Send up to ${MAX_IMAGES} photos at a time.` } });
+      }
+      imageInputs = [];
+      for (const b64 of images) {
+        if (typeof b64 !== 'string' || b64.length < 100) {
+          return res.status(400).json({ error: { category: 'BAD_IMAGE', message: 'One of the photos was not received. Try again.' } });
+        }
+        if (b64.length > MAX_IMAGE_BYTES * 1.4) {
+          return res.status(413).json({ error: { category: 'BAD_IMAGE', message: 'One photo is too large. Try smaller images.' } });
+        }
+        imageInputs.push(b64);
+      }
+    } else {
+      if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
+        return res.status(400).json({ error: { category: 'BAD_IMAGE', message: 'No photo was received. Try again.' } });
+      }
+      if (imageBase64.length > MAX_IMAGE_BYTES * 1.4) {
+        return res.status(413).json({ error: { category: 'BAD_IMAGE', message: 'Photo is too large. Try a smaller image.' } });
+      }
+      imageInputs = [imageBase64];
     }
 
     // Normalize: EXIF orientation fixed, longest side <=1600, JPEG q80.
     // Handles JPEG/PNG/WEBP/HEIC input — Gemini always gets clean JPEG.
-    let jpeg;
+    const jpegs = [];
     try {
-      const input = Buffer.from(imageBase64, 'base64');
-      const meta = await sharp(input).metadata();
-      jpeg = await sharp(input)
-        .rotate() // honor EXIF orientation
-        .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 80, mozjpeg: true })
-        .toBuffer();
-      console.log(JSON.stringify({
-        evt: 'image_normalized',
-        inFormat: meta.format, inW: meta.width, inH: meta.height,
-        outBytes: jpeg.length, inMime: mimeType || 'unknown',
-      }));
+      for (let i = 0; i < imageInputs.length; i++) {
+        const input = Buffer.from(imageInputs[i], 'base64');
+        const meta = await sharp(input).metadata();
+        const jpeg = await sharp(input)
+          .rotate() // honor EXIF orientation
+          .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 80, mozjpeg: true })
+          .toBuffer();
+        jpegs.push(jpeg);
+        console.log(JSON.stringify({
+          evt: 'image_normalized',
+          ...(multiMode ? { index: i, count: imageInputs.length } : {}),
+          inFormat: meta.format, inW: meta.width, inH: meta.height,
+          outBytes: jpeg.length, inMime: mimeType || 'unknown',
+        }));
+      }
     } catch {
       return res.status(400).json({ error: { category: 'BAD_IMAGE', message: 'That file is not a readable photo. Try a JPEG or PNG.' } });
     }
+
+    // Single photo: SYSTEM_PROMPT alone, exactly as before.
+    const promptText = multiMode
+      ? SYSTEM_PROMPT + MULTI_PHOTO_ADDENDUM.replace('{N}', String(jpegs.length))
+      : SYSTEM_PROMPT;
+    const jpegBase64List = jpegs.map((j) => j.toString('base64'));
 
     const models = [PRIMARY_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PRIMARY_MODEL)];
     let result = null;
     let modelError = null;
     for (const model of models) {
       try {
-        result = await callGemini(apiKey, model, jpeg.toString('base64'), startedAt);
+        result = await callGemini(apiKey, model, jpegBase64List, promptText, startedAt);
         break;
       } catch (e) {
         if (e instanceof GeminiError && e.category === 'MODEL_ERROR' && e.status === 404) {
@@ -296,6 +346,7 @@ functions.http('analyzeProduct', async (req, res) => {
     console.log(JSON.stringify({
       evt: 'analysis_ok', model: result.model, attempts: result.attempts,
       confidence: p.confidence, recognized: !!p.recognized,
+      photos: jpegs.length,
       totalMs: Date.now() - startedAt,
     }));
     return res.status(200).json({ ...p, _meta: { model: result.model, attempts: result.attempts } });
