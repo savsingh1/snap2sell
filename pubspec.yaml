@@ -25,8 +25,12 @@ dependencies:
   # Local-first persistence (Firebase-ready abstraction in storage_service.dart)
   shared_preferences: ^2.2.2
 
-  # HTTP for the live AI vision service
+  # HTTP for the secure analysis backend
   http: ^1.2.1
+
+  # Pure-Dart image decoding/resizing (EXIF orientation, compression)
+  # before upload — no native dependencies, works on all platforms.
+  image: ^4.2.0
 
   # Best-effort "open marketplace sell page" links
   url_launcher: ^6.2.5
