@@ -147,7 +147,7 @@ wants to resell, respond with ONLY a single JSON object (no markdown fences,
 no commentary) with exactly these fields:
 {
   "title": "short marketplace title, e.g. 'IKEA LACK Side Table — White'",
-  "category": "one of: Furniture, Electronics, Appliances, Fashion, Toys & Games, Books & Media, Sports & Outdoors, Baby & Kids, Home & Garden, Miscellaneous",
+  "category": "one of: Furniture, Electronics, Appliances, Fashion, Beauty & Personal Care, Toys & Games, Books & Media, Sports & Outdoors, Baby & Kids, Home & Garden, Miscellaneous",
   "condition": "one of: likeNew, excellent, good, fair, poor",
   "priceLow": number (low end of fair resale range, USD/CAD dollars),
   "priceHigh": number (high end of fair resale range),
@@ -156,6 +156,7 @@ no commentary) with exactly these fields:
 }
 HONESTY RULES — follow strictly:
 - Only name a brand if it is clearly visible or legible in the photo. Never guess a brand.
+- If a brand logo or mark is visible but its text is NOT legible, describe the mark (e.g. "metal infinity-loop logo") in the description instead of naming a brand.
 - Only state materials (leather, wood, metal, etc.) if clearly visible. Never guess.
 - Base the price range on typical second-hand marketplace values in North America. These are ESTIMATES, not appraisals — say so in the description ("priced as an estimate").
 - If the photo is unclear or an attribute cannot be determined, omit it rather than inventing it, and note the uncertainty in the description.

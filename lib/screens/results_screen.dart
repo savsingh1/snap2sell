@@ -15,6 +15,7 @@ const List<String> kCategories = [
   'Electronics',
   'Appliances',
   'Fashion',
+  'Beauty & Personal Care',
   'Toys & Games',
   'Books & Media',
   'Sports & Outdoors',
