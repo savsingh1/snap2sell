@@ -119,18 +119,27 @@ class MockAiService implements AiService {
 /// and parses the strict-JSON listing it returns.
 ///
 /// Any failure (network, bad key, unparsable response) throws
-/// [AiServiceException] — the caller ([AppState]) falls back to
-/// [MockAiService] so the demo never hard-crashes on a key problem.
+/// [AiServiceException] — the caller ([AppState]) keeps the photo, clears
+/// AI placeholders, and offers retry / manual entry. No fake listing is
+/// ever generated.
 class GeminiVisionService implements AiService {
   GeminiVisionService({
     required this.apiKey,
-    this.model = 'gemini-2.5-flash',
+    this.model = 'gemini-3.6-flash',
     http.Client? client,
   }) : _client = client ?? http.Client();
 
   final String apiKey;
   final String model;
   final http.Client _client;
+
+  /// Fallback models tried in order when the preferred model 404s
+  /// (Google retires models regularly — e.g. gemini-2.5-flash in Oct 2026).
+  static const List<String> _fallbackModels = [
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-3.8-flash',
+  ];
 
   static const String _systemPrompt = """
 You are Snap2Sell's listing expert. Given a photo of a household item someone
@@ -145,16 +154,37 @@ no commentary) with exactly these fields:
   "suggestedPrice": number (list price: near the middle, rounded to a whole or .99 value),
   "description": "2-4 sentence marketplace description: what it is, condition honestly stated, notable inclusions, pickup/payment note"
 }
-Base the price range on typical second-hand marketplace values in North America.
-If the photo is unclear, make your best guess and note the uncertainty in the description.
+HONESTY RULES — follow strictly:
+- Only name a brand if it is clearly visible or legible in the photo. Never guess a brand.
+- Only state materials (leather, wood, metal, etc.) if clearly visible. Never guess.
+- Base the price range on typical second-hand marketplace values in North America. These are ESTIMATES, not appraisals — say so in the description ("priced as an estimate").
+- If the photo is unclear or an attribute cannot be determined, omit it rather than inventing it, and note the uncertainty in the description.
+- The user will confirm the condition before listing; give your best visual assessment.
 """;
 
   @override
   Future<AiAnalysisResult> analyzeItem(Uint8List photoBytes) async {
+    final models = <String>[model, ..._fallbackModels.where((m) => m != model)];
+    AiServiceException? lastError;
+    for (final m in models) {
+      try {
+        return await _attempt(photoBytes, m);
+      } on _TryNextModel catch (t) {
+        lastError = AiServiceException('Vision model $m is ${t.reason}.');
+        continue; // try the next model
+      } on AiServiceException catch (e) {
+        lastError = e;
+        break; // real failure (key, quota, network) — don't mask it
+      }
+    }
+    throw lastError ?? AiServiceException('Could not analyze photo.');
+  }
+
+  Future<AiAnalysisResult> _attempt(Uint8List photoBytes, String attemptModel) async {
     try {
       final base64Image = base64Encode(photoBytes);
       final uri = Uri.parse(
-        'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent',
+        'https://generativelanguage.googleapis.com/v1beta/models/$attemptModel:generateContent',
       ).replace(queryParameters: {'key': apiKey});
 
       final response = await _client
@@ -183,6 +213,12 @@ If the photo is unclear, make your best guess and note the uncertainty in the de
           )
           .timeout(const Duration(seconds: 60));
 
+      if (response.statusCode == 404 || response.statusCode == 503) {
+        // Model retired/renamed (404) or temporarily at capacity (503) —
+        // signal the caller to try the next one.
+        throw _TryNextModel(
+            response.statusCode == 404 ? 'retired' : 'temporarily overloaded');
+      }
       if (response.statusCode != 200) {
         throw AiServiceException(
           'Vision API returned HTTP ${response.statusCode}: ${response.body}',
@@ -213,6 +249,8 @@ If the photo is unclear, make your best guess and note the uncertainty in the de
 
       final listingJson = jsonDecode(text) as Map<String, dynamic>;
       return AiAnalysisResult.fromJson(listingJson);
+    } on _TryNextModel {
+      rethrow;
     } on AiServiceException {
       rethrow;
     } catch (e) {
@@ -221,4 +259,12 @@ If the photo is unclear, make your best guess and note the uncertainty in the de
   }
 
   void dispose() => _client.close();
+}
+
+/// Thrown when the requested Gemini model 404s (retired/renamed) or 503s
+/// (temporary capacity). [GeminiVisionService.analyzeItem] catches this and
+/// tries the next model.
+class _TryNextModel implements Exception {
+  _TryNextModel(this.reason);
+  final String reason;
 }

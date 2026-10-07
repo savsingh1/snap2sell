@@ -117,9 +117,36 @@ class _ResultsScreenState extends State<ResultsScreen> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: const Color(0xFFFFB74D)),
               ),
-              child: Text(
-                appState.analysisError!,
-                style: const TextStyle(fontSize: 13, color: Color(0xFFE65100)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    appState.analysisError!,
+                    style: const TextStyle(fontSize: 13, color: Color(0xFFE65100)),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: appState.isAnalyzing
+                              ? null
+                              : () => appState.retryAnalysis(),
+                          child: Text(appState.isAnalyzing
+                              ? 'Retrying…'
+                              : 'Retry analysis'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => appState.clearAnalysisError(),
+                          child: const Text('Enter details manually'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 12),
@@ -320,7 +347,7 @@ class _PriceCard extends StatelessWidget {
                 ),
                 const Spacer(),
                 Text(
-                  'AI range: $rangeHint',
+                  'AI estimate: $rangeHint',
                   style: const TextStyle(
                     color: SnapColors.textMuted,
                     fontSize: 12,

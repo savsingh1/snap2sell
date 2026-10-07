@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -145,12 +146,23 @@ class AppState extends ChangeNotifier {
     if (picked == null) return null; // user cancelled
 
     final bytes = await picked.readAsBytes();
-    _currentPhotoBytes = bytes;
     // Web has no app-documents directory: keep the photo in memory and use
     // the picker's blob path for reference only.
     final savedPath =
         kIsWeb ? picked.path : await _copyToDocuments(File(picked.path));
 
+    return analyzePhotoBytes(bytes, savedPath: savedPath);
+  }
+
+  /// Runs the AI pipeline on raw photo [bytes]. Separated from
+  /// [pickAndAnalyze] so the analysis/failure path is unit-testable without
+  /// the image picker or filesystem.
+  @visibleForTesting
+  Future<Item?> analyzePhotoBytes(
+    Uint8List bytes, {
+    required String savedPath,
+  }) async {
+    _currentPhotoBytes = bytes;
     _currentItem = Item(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       photoPath: savedPath,
@@ -180,28 +192,10 @@ class AppState extends ChangeNotifier {
         status: ListingStatus.draft,
       );
     } on AiServiceException catch (e) {
-      // Live backend failed — fall back to the mock so the demo continues.
-      // The reason is surfaced in the UI so failures are diagnosable.
-      debugPrint('Live AI failed, falling back to mock: $e');
-      final reason = e.message.length > 160
-          ? '${e.message.substring(0, 160)}…'
-          : e.message;
-      try {
-        final fallback = await MockAiService().analyzeItem(bytes);
-        _currentItem = _currentItem!.copyWith(
-          title: fallback.title,
-          category: fallback.category,
-          condition: fallback.condition,
-          priceLow: fallback.priceLow,
-          priceHigh: fallback.priceHigh,
-          suggestedPrice: fallback.suggestedPrice,
-          description: fallback.description,
-          status: ListingStatus.draft,
-        );
-        _analysisError = 'Live AI unavailable ($reason) — showing demo data.';
-      } catch (_) {
-        _analysisError = 'Could not analyze this photo. Please try again.';
-      }
+      // Live backend failed — never invent a listing. Keep the photo and any
+      // user-entered details, clear AI placeholders, and surface the reason
+      // so the user can retry or enter details manually.
+      _handleAnalysisFailure(e);
     } finally {
       _isAnalyzing = false;
       notifyListeners();
@@ -210,9 +204,70 @@ class AppState extends ChangeNotifier {
     return _currentItem;
   }
 
+  /// Re-runs AI analysis on the current photo, preserving anything the user
+  /// has typed. Called from the "Retry analysis" button after a failure.
+  Future<void> retryAnalysis() async {
+    final bytes = _currentPhotoBytes;
+    if (bytes == null || _currentItem == null || _isAnalyzing) return;
+    _isAnalyzing = true;
+    _analysisStep = 0;
+    _analysisError = null;
+    notifyListeners();
+    try {
+      final result = await _runPipelineWithSteps(bytes);
+      _currentItem = _currentItem!.copyWith(
+        title: result.title,
+        category: result.category,
+        condition: result.condition,
+        priceLow: result.priceLow,
+        priceHigh: result.priceHigh,
+        suggestedPrice: result.suggestedPrice,
+        description: result.description,
+        status: ListingStatus.draft,
+      );
+    } on AiServiceException catch (e) {
+      _handleAnalysisFailure(e);
+    } finally {
+      _isAnalyzing = false;
+      notifyListeners();
+    }
+  }
+
+  /// Dismisses the analysis error banner so the user can enter details
+  /// manually. The photo and any typed values are preserved.
+  void clearAnalysisError() {
+    _analysisError = null;
+    notifyListeners();
+  }
+
+  /// Failure path shared by [pickAndAnalyze] and [retryAnalysis]: the photo
+  /// and user-entered details survive, AI placeholders are cleared, and no
+  /// demo/fake listing is ever generated.
+  void _handleAnalysisFailure(AiServiceException e) {
+    debugPrint('Live AI failed: $e');
+    final reason =
+        e.message.length > 240 ? '${e.message.substring(0, 240)}…' : e.message;
+    final currentTitle = _currentItem?.title;
+    _currentItem = _currentItem?.copyWith(
+      title: (currentTitle == null || currentTitle == 'Analyzing…')
+          ? ''
+          : currentTitle,
+      description: '',
+      priceLow: 0,
+      priceHigh: 0,
+      suggestedPrice: 0,
+      status: ListingStatus.draft,
+    );
+    _analysisError = 'Could not analyze this photo ($reason)';
+  }
+
   /// Drives the visible step indicator while the AI call runs.
   Future<AiAnalysisResult> _runPipelineWithSteps(Uint8List photoBytes) async {
     final pending = _aiService.analyzeItem(photoBytes);
+    // Guard: if the AI fails fast, the error would otherwise sit unhandled
+    // while the step animation plays. This marks it handled; the await
+    // below still receives the same outcome.
+    unawaited(pending.then<void>((_) {}, onError: (_) {}));
     // Walk the visible steps; the real AI result is awaited on the final step
     // so the progress UI feels alive even when the backend is fast.
     for (var i = 0; i < kAnalysisSteps.length; i++) {
