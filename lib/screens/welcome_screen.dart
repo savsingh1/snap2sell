@@ -21,10 +21,19 @@ class WelcomeScreen extends StatelessWidget {
           ),
         ),
         child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28),
-            child: Column(
-              children: [
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Scroll-safe on short screens; spacers still distribute the
+              // hero nicely when there is room to spare.
+              return SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints:
+                      BoxConstraints(minHeight: constraints.maxHeight),
+                  child: IntrinsicHeight(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 28),
+                      child: Column(
+                        children: [
                 const Spacer(flex: 2),
                 const SnapLogo(size: 96),
                 const SizedBox(height: 20),
@@ -103,8 +112,13 @@ class WelcomeScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 8),
-              ],
-            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),
@@ -162,8 +176,8 @@ class _TipsCard extends StatelessWidget {
                 ],
               ),
             ),
-        ],
-      ),
-    );
+          ],
+        ),
+      );
+    }
   }
-}

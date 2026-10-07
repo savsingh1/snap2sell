@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -69,8 +70,29 @@ class ListingService {
 
   /// Opens the system share sheet pre-filled with the listing text + photo.
   /// The user picks the target app (Messenger, Messages, Facebook, etc.).
-  Future<void> shareListing(Item item) async {
+  ///
+  /// On web, dart:io files do not exist, so the photo comes from
+  /// [photoBytes] (in-memory) instead of [Item.photoPath].
+  Future<void> shareListing(Item item, {Uint8List? photoBytes}) async {
     final text = buildListingText(item);
+    if (kIsWeb) {
+      if (photoBytes != null) {
+        await Share.shareXFiles(
+          [
+            XFile.fromData(
+              photoBytes,
+              name: 'snap2sell-photo.jpg',
+              mimeType: 'image/jpeg',
+            )
+          ],
+          text: text,
+          subject: item.title,
+        );
+      } else {
+        await Share.share(text, subject: item.title);
+      }
+      return;
+    }
     final photo = File(item.photoPath);
     if (await photo.exists()) {
       await Share.shareXFiles(

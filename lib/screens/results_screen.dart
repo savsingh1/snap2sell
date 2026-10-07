@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -107,7 +108,10 @@ class _ResultsScreenState extends State<ResultsScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
         children: [
-          _PhotoPreview(path: item.photoPath),
+          _PhotoPreview(
+            path: item.photoPath,
+            bytes: appState.currentPhotoBytes,
+          ),
           const SizedBox(height: 16),
           _label('Item title'),
           TextField(
@@ -232,23 +236,38 @@ class _ResultsScreenState extends State<ResultsScreen> {
 }
 
 class _PhotoPreview extends StatelessWidget {
-  const _PhotoPreview({required this.path});
+  const _PhotoPreview({required this.path, this.bytes});
   final String path;
+
+  /// In-memory photo bytes (web). When null on web, the placeholder shows.
+  final Uint8List? bytes;
 
   @override
   Widget build(BuildContext context) {
-    final file = File(path);
+    final Widget image;
+    if (kIsWeb) {
+      image = bytes != null
+          ? Image.memory(bytes!, fit: BoxFit.cover)
+          : Container(
+              color: SnapColors.primaryLight,
+              child: const Icon(Icons.image_rounded,
+                  size: 48, color: SnapColors.primary),
+            );
+    } else {
+      final file = File(path);
+      image = file.existsSync()
+          ? Image.file(file, fit: BoxFit.cover)
+          : Container(
+              color: SnapColors.primaryLight,
+              child: const Icon(Icons.image_rounded,
+                  size: 48, color: SnapColors.primary),
+            );
+    }
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: AspectRatio(
         aspectRatio: 4 / 3,
-        child: file.existsSync()
-            ? Image.file(file, fit: BoxFit.cover)
-            : Container(
-                color: SnapColors.primaryLight,
-                child: const Icon(Icons.image_rounded,
-                    size: 48, color: SnapColors.primary),
-              ),
+        child: image,
       ),
     );
   }

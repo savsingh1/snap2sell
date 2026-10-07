@@ -1,17 +1,20 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
 import '../models/ai_analysis_result.dart';
 import 'config.dart';
 
-/// Contract every AI backend must satisfy: photo in, listing data out.
+/// Contract every AI backend must satisfy: photo bytes in, listing data out.
+///
+/// Bytes (not [File]) keep this working on every platform, including web
+/// where dart:io files do not exist.
 abstract class AiService {
-  /// Analyzes [photo] and returns a structured listing draft.
+  /// Analyzes [photoBytes] and returns a structured listing draft.
   /// Throws [AiServiceException] when the backend cannot complete the task.
-  Future<AiAnalysisResult> analyzeItem(File photo);
+  Future<AiAnalysisResult> analyzeItem(Uint8List photoBytes);
 }
 
 /// Picks the right backend: live vision API when a key is configured,
@@ -100,7 +103,7 @@ class MockAiService implements AiService {
   ];
 
   @override
-  Future<AiAnalysisResult> analyzeItem(File photo) async {
+  Future<AiAnalysisResult> analyzeItem(Uint8List photoBytes) async {
     // Simulate the multi-step pipeline so the Processing screen feels real.
     await Future<void>.delayed(const Duration(milliseconds: 900));
     await Future<void>.delayed(const Duration(milliseconds: 900));
@@ -148,10 +151,9 @@ If the photo is unclear, make your best guess and note the uncertainty in the de
 ''';
 
   @override
-  Future<AiAnalysisResult> analyzeItem(File photo) async {
+  Future<AiAnalysisResult> analyzeItem(Uint8List photoBytes) async {
     try {
-      final bytes = await photo.readAsBytes();
-      final base64Image = base64Encode(bytes);
+      final base64Image = base64Encode(photoBytes);
 
       final response = await _client
           .post(

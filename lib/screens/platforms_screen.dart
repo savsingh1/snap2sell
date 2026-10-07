@@ -22,7 +22,10 @@ class PlatformsScreen extends StatelessWidget {
     final item = appState.currentItem;
     if (item == null) return;
     await appState.saveCurrentItem(status: ListingStatus.ready);
-    await appState.listingService.shareListing(item);
+    await appState.listingService.shareListing(
+      item,
+      photoBytes: appState.currentPhotoBytes,
+    );
     if (!context.mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const ConfirmationScreen()),

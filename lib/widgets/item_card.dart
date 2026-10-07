@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -104,23 +105,36 @@ class ItemCard extends StatelessWidget {
 
 class _Thumbnail extends StatelessWidget {
   const _Thumbnail({required this.path});
+
   final String path;
 
   @override
   Widget build(BuildContext context) {
-    final file = File(path);
+    final Widget image;
+    if (kIsWeb) {
+      // Web keeps photos in memory for the session only; past listings
+      // show the placeholder thumbnail.
+      image = Container(
+        color: SnapColors.primaryLight,
+        child:
+            const Icon(Icons.image_rounded, color: SnapColors.primary),
+      );
+    } else {
+      final file = File(path);
+      image = file.existsSync()
+          ? Image.file(file, fit: BoxFit.cover)
+          : Container(
+              color: SnapColors.primaryLight,
+              child: const Icon(Icons.image_rounded,
+                  color: SnapColors.primary),
+            );
+    }
     return ClipRRect(
       borderRadius: BorderRadius.circular(14),
       child: SizedBox(
         width: 72,
         height: 72,
-        child: file.existsSync()
-            ? Image.file(file, fit: BoxFit.cover)
-            : Container(
-                color: SnapColors.primaryLight,
-                child: const Icon(Icons.image_rounded,
-                    color: SnapColors.primary),
-              ),
+        child: image,
       ),
     );
   }

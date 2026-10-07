@@ -124,8 +124,7 @@ ThemeData buildSnapTheme() {
   );
 }
 
-/// Small logo mark: white circle with a purple camera + mint price tag.
-/// (Drawn with icons so no image asset is required for the MVP.)
+/// Small logo mark: the official Snap2Sell logo in a white circle.
 class SnapLogo extends StatelessWidget {
   const SnapLogo({super.key, this.size = 84});
 
@@ -147,27 +146,11 @@ class SnapLogo extends StatelessWidget {
           ),
         ],
       ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Icon(
-            Icons.photo_camera_rounded,
-            size: size * 0.52,
-            color: SnapColors.primary,
-          ),
-          Positioned(
-            right: size * 0.16,
-            bottom: size * 0.16,
-            child: Transform.rotate(
-              angle: -0.5,
-              child: Icon(
-                Icons.sell_rounded,
-                size: size * 0.34,
-                color: SnapColors.teal,
-              ),
-            ),
-          ),
-        ],
+      child: ClipOval(
+        child: Image.asset(
+          'assets/logo.png',
+          fit: BoxFit.cover,
+        ),
       ),
     );
   }

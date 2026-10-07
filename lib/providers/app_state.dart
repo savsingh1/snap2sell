@@ -38,6 +38,15 @@ class AppState extends ChangeNotifier {
 
   List<Item> _items = [];
   Item? _currentItem;
+
+  /// Raw bytes of the photo being analyzed. On web there is no app-documents
+  /// directory, so the photo lives in memory for the session instead.
+  Uint8List? _currentPhotoBytes;
+
+  /// Raw photo bytes for the item currently being analyzed (null until a
+  /// photo is picked). Used for display and sharing on web.
+  Uint8List? get currentPhotoBytes => _currentPhotoBytes;
+
   bool _loaded = false;
   bool _isAnalyzing = false;
   int _analysisStep = 0;
@@ -89,7 +98,12 @@ class AppState extends ChangeNotifier {
     );
     if (picked == null) return null; // user cancelled
 
-    final savedPath = await _copyToDocuments(File(picked.path));
+    final bytes = await picked.readAsBytes();
+    _currentPhotoBytes = bytes;
+    // Web has no app-documents directory: keep the photo in memory and use
+    // the picker's blob path for reference only.
+    final savedPath =
+        kIsWeb ? picked.path : await _copyToDocuments(File(picked.path));
 
     _currentItem = Item(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -108,7 +122,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final result = await _runPipelineWithSteps(File(savedPath));
+      final result = await _runPipelineWithSteps(bytes);
       _currentItem = _currentItem!.copyWith(
         title: result.title,
         category: result.category,
@@ -123,7 +137,7 @@ class AppState extends ChangeNotifier {
       // Live backend failed — fall back to the mock so the demo continues.
       debugPrint('Live AI failed, falling back to mock: $e');
       try {
-        final fallback = await MockAiService().analyzeItem(File(savedPath));
+        final fallback = await MockAiService().analyzeItem(bytes);
         _currentItem = _currentItem!.copyWith(
           title: fallback.title,
           category: fallback.category,
@@ -147,8 +161,8 @@ class AppState extends ChangeNotifier {
   }
 
   /// Drives the visible step indicator while the AI call runs.
-  Future<AiAnalysisResult> _runPipelineWithSteps(File photo) async {
-    final pending = _aiService.analyzeItem(photo);
+  Future<AiAnalysisResult> _runPipelineWithSteps(Uint8List photoBytes) async {
+    final pending = _aiService.analyzeItem(photoBytes);
     // Walk the visible steps; the real AI result is awaited on the final step
     // so the progress UI feels alive even when the backend is fast.
     for (var i = 0; i < kAnalysisSteps.length; i++) {
