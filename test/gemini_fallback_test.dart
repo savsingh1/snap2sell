@@ -52,7 +52,7 @@ void main() {
   group('GeminiVisionService model fallback', () {
     test('falls through a retired (404) model to the next one', () async {
       final client = _ModelRoutingClient((uri) {
-        if (uri.path.contains('gemini-3.6-flash')) {
+        if (uri.path.contains('gemini-3.8-flash')) {
           return http.Response(
               '{"error":{"code":404,"message":"not available"}}', 404);
         }
@@ -65,12 +65,12 @@ void main() {
 
       expect(result.title, 'Wallet via fallback');
       expect(client.requestedModels,
-          ['gemini-3.6-flash', 'gemini-3.5-flash']);
+          ['gemini-3.8-flash', 'gemini-3.6-flash']);
     });
 
     test('falls through an overloaded (503) model to the next one', () async {
       final client = _ModelRoutingClient((uri) {
-        if (uri.path.contains('gemini-3.6-flash')) {
+        if (uri.path.contains('gemini-3.8-flash')) {
           return http.Response('{"error":{"code":503}}', 503);
         }
         return http.Response(_listingJson('Wallet via 503 fallback'), 200);
@@ -82,7 +82,7 @@ void main() {
 
       expect(result.title, 'Wallet via 503 fallback');
       expect(client.requestedModels,
-          ['gemini-3.6-flash', 'gemini-3.5-flash']);
+          ['gemini-3.8-flash', 'gemini-3.6-flash']);
     });
 
     test('throws (no fake data) when every model is retired', () async {
@@ -106,7 +106,7 @@ void main() {
         throwsA(isA<AiServiceException>()),
       );
       // Only the preferred model was attempted — no masking of real errors.
-      expect(client.requestedModels, ['gemini-3.6-flash']);
+      expect(client.requestedModels, ['gemini-3.8-flash']);
     });
   });
 }
