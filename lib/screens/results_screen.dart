@@ -108,6 +108,22 @@ class _ResultsScreenState extends State<ResultsScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
         children: [
+          if (appState.analysisError != null) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF3E0),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFFB74D)),
+              ),
+              child: Text(
+                appState.analysisError!,
+                style: const TextStyle(fontSize: 13, color: Color(0xFFE65100)),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           _PhotoPreview(
             path: item.photoPath,
             bytes: appState.currentPhotoBytes,

@@ -181,7 +181,11 @@ class AppState extends ChangeNotifier {
       );
     } on AiServiceException catch (e) {
       // Live backend failed — fall back to the mock so the demo continues.
+      // The reason is surfaced in the UI so failures are diagnosable.
       debugPrint('Live AI failed, falling back to mock: $e');
+      final reason = e.message.length > 160
+          ? '${e.message.substring(0, 160)}…'
+          : e.message;
       try {
         final fallback = await MockAiService().analyzeItem(bytes);
         _currentItem = _currentItem!.copyWith(
@@ -194,7 +198,7 @@ class AppState extends ChangeNotifier {
           description: fallback.description,
           status: ListingStatus.draft,
         );
-        _analysisError = 'Live AI unavailable — showing demo data.';
+        _analysisError = 'Live AI unavailable ($reason) — showing demo data.';
       } catch (_) {
         _analysisError = 'Could not analyze this photo. Please try again.';
       }
