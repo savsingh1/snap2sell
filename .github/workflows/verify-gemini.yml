@@ -75,6 +75,24 @@ jobs:
                       body = {}
                   return e.code, body
 
+          def post_images(b64_list, timeout=120):
+              """Multi-photo request: sends the images array (up to 5)."""
+              payload = json.dumps(
+                  {"images": b64_list, "mimeType": "image/jpeg"}).encode()
+              headers = {"Content-Type": "application/json",
+                         "x-app-secret": secret}
+              req = urllib.request.Request(backend + "/", data=payload,
+                                           headers=headers, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as resp:
+                      return resp.status, json.loads(resp.read().decode())
+              except urllib.error.HTTPError as e:
+                  try:
+                      body = json.loads(e.read().decode())
+                  except Exception:
+                      body = {}
+                  return e.code, body
+
           images = {k: make_image(k) for k in ("wallet", "microwave", "chair")}
 
           # 1) Negative test: no app secret must be rejected.
@@ -97,6 +115,18 @@ jobs:
                     f"CONFIDENCE={body.get('confidence')} TITLE={title}")
               all_ok = all_ok and ok_fields
               time.sleep(2)
+
+          # 3) Multi-photo: one request with the images array must return
+          #    structured identification as well (backward-compat: step 2
+          #    already proved the single-image field still works).
+          status, body = post_images(
+              [images["wallet"], images["microwave"], images["chair"]])
+          multi_ok = (status == 200 and
+                      all(k in body for k in required) and
+                      isinstance(body.get("confidence"), (int, float)))
+          print(f"MULTI_IMAGE STATUS={status} VALID={multi_ok} "
+                f"TITLE={str(body.get('suggested_title', ''))[:60]}")
+          all_ok = all_ok and multi_ok
 
           print(f"BACKEND_E2E_OK={all_ok}")
           sys.exit(0 if all_ok else 1)
