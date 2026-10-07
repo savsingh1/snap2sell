@@ -10,18 +10,16 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
+      - name: Install dependencies
+        run: python3 -m pip install -q pillow
+
       - name: Probe candidate models with a real image request
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python3 - <<'PYEOF'
           import base64, io, json, os, sys, urllib.request, urllib.error
-
-          try:
-              from PIL import Image, ImageDraw
-          except ImportError:
-              os.system(f"{sys.executable} -m pip install -q pillow")
-              from PIL import Image, ImageDraw
+          from PIL import Image, ImageDraw
 
           key = os.environ["GEMINI_API_KEY"]
           assert key and len(key) > 10, "GEMINI_API_KEY secret is missing!"
