@@ -50,9 +50,26 @@ class AppState extends ChangeNotifier {
   /// directory, so the photo lives in memory for the session instead.
   Uint8List? _currentPhotoBytes;
 
+  /// Extra photos added from the review screen (up to [maxPhotosPerListing]
+  /// total including the main photo). Bytes may be null until lazy-loaded
+  /// from [_extraPhotoPaths] on demand.
+  final List<Uint8List?> _extraPhotoBytes = [];
+  final List<String> _extraPhotoPaths = [];
+
+  /// Cap on photos per listing (main + extras).
+  static const int maxPhotosPerListing = 5;
+
   /// Raw photo bytes for the item currently being analyzed (null until a
   /// photo is picked). Used for display and sharing on web.
   Uint8List? get currentPhotoBytes => _currentPhotoBytes;
+
+  /// Paths of the extra photos (in addition to the main [Item.photoPath]).
+  List<String> get extraPhotoPaths => List<String>.unmodifiable(_extraPhotoPaths);
+
+  /// Total photo count for the current listing (main + extras).
+  int get photoCount => 1 + _extraPhotoPaths.length;
+
+  bool get canAddMorePhotos => photoCount < maxPhotosPerListing;
 
   bool _loaded = false;
   bool _isAnalyzing = false;
@@ -169,6 +186,10 @@ class AppState extends ChangeNotifier {
     required String savedPath,
   }) async {
     _currentPhotoBytes = bytes;
+    // A fresh analysis starts a fresh photo set: extras from any previous
+    // listing are dropped.
+    _extraPhotoBytes.clear();
+    _extraPhotoPaths.clear();
     _currentItem = Item(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       photoPath: savedPath,
@@ -260,6 +281,150 @@ class AppState extends ChangeNotifier {
   void clearAnalysisError() {
     _analysisError = null;
     notifyListeners();
+  }
+
+  // ----- multi-photo ------------------------------------------------------
+  // Optional addition: after the first photo is analyzed, the user can add
+  // up to 4 more photos from the review screen and re-run the analysis on
+  // all of them. The single-photo capture flow above is unchanged.
+
+  /// Adds one more photo to the current listing from [source]. Returns false
+  /// when the user cancelled or the 5-photo cap is reached.
+  Future<bool> addPhoto(ImageSource source) async {
+    if (!canAddMorePhotos || _currentItem == null) return false;
+    final picked = await _imagePicker.pickImage(
+      source: source,
+      maxWidth: 1600,
+      imageQuality: 85,
+    );
+    if (picked == null) return false; // user cancelled
+    final bytes = await picked.readAsBytes();
+    final savedPath =
+        kIsWeb ? picked.path : await _copyToDocuments(File(picked.path));
+    _extraPhotoBytes.add(bytes);
+    _extraPhotoPaths.add(savedPath);
+    notifyListeners();
+    return true;
+  }
+
+  /// Removes an extra photo (index into the extras, not counting the main
+  /// photo). The main photo itself cannot be removed.
+  void removeExtraPhotoAt(int index) {
+    if (index < 0 || index >= _extraPhotoPaths.length) return;
+    _extraPhotoBytes.removeAt(index);
+    _extraPhotoPaths.removeAt(index);
+    notifyListeners();
+  }
+
+  /// Reorders extra photos (used by drag-reorder in the thumbnail strip).
+  void moveExtraPhoto(int from, int to) {
+    if (from < 0 ||
+        from >= _extraPhotoPaths.length ||
+        to < 0 ||
+        to >= _extraPhotoPaths.length) {
+      return;
+    }
+    final path = _extraPhotoPaths.removeAt(from);
+    final bytes = _extraPhotoBytes.removeAt(from);
+    _extraPhotoPaths.insert(to, path);
+    _extraPhotoBytes.insert(to, bytes);
+    notifyListeners();
+  }
+
+  /// Photo bytes for every photo in the listing, main first. Extras are
+  /// lazy-loaded from disk when their in-memory bytes are unavailable
+  /// (e.g. after reopening a saved listing).
+  Future<List<Uint8List>> _gatherAllPhotoBytes() async {
+    final out = <Uint8List>[];
+    var main = _currentPhotoBytes;
+    if (main == null && !kIsWeb && _currentItem != null) {
+      try {
+        main = await File(_currentItem!.photoPath).readAsBytes();
+        _currentPhotoBytes = main;
+      } catch (_) {
+        // leave null — the photo may genuinely be gone
+      }
+    }
+    if (main != null) out.add(main);
+    for (var i = 0; i < _extraPhotoPaths.length; i++) {
+      var b = _extraPhotoBytes[i];
+      if (b == null && !kIsWeb) {
+        try {
+          b = await File(_extraPhotoPaths[i]).readAsBytes();
+          _extraPhotoBytes[i] = b;
+        } catch (_) {
+          // skip unreadable extras
+        }
+      }
+      if (b != null && b.isNotEmpty) out.add(b);
+    }
+    return out;
+  }
+
+  /// Re-runs AI analysis using ALL photos of the current listing. Called
+  /// from the review screen after the user adds photos. Anything the user
+  /// typed is preserved, exactly like [retryAnalysis].
+  Future<void> reanalyzeWithPhotos() async {
+    if (_currentItem == null || _isAnalyzing) return;
+    final photos = await _gatherAllPhotoBytes();
+    if (photos.isEmpty) return;
+    _isAnalyzing = true;
+    _analysisStep = 0;
+    _analysisError = null;
+    notifyListeners();
+    try {
+      final processed =
+          photos.map((p) => _imageService.process(p).bytes).toList();
+      final result = await _runMultiPipelineWithSteps(processed);
+      _currentItem = _currentItem!.copyWith(
+        title: result.title,
+        category: result.category,
+        condition: result.condition,
+        priceLow: result.priceLow,
+        priceHigh: result.priceHigh,
+        suggestedPrice: result.suggestedPrice,
+        description: result.description,
+        status: ListingStatus.draft,
+      );
+    } on ImageProcessingException {
+      _handleAnalysisFailure(AiServiceException(
+        'Unreadable photo.',
+        category: AiErrorCategory.badImage,
+      ));
+    } on AiServiceException catch (e) {
+      _handleAnalysisFailure(e);
+    } finally {
+      _isAnalyzing = false;
+      notifyListeners();
+    }
+  }
+
+  /// Multi-photo twin of [_runPipelineWithSteps]: same animated steps, but
+  /// calls [AiService.analyzeItems]. The per-photo processing already
+  /// happened, so the cap here covers the backend round trip for up to 5
+  /// photos (longer than the single-photo cap).
+  Future<AiAnalysisResult> _runMultiPipelineWithSteps(
+      List<Uint8List> photoBytesList) async {
+    final pending = _aiService
+        .analyzeItems(photoBytesList)
+        .timeout(const Duration(seconds: 150), onTimeout: () {
+      throw AiServiceException(
+        'The AI service is taking too long to respond. '
+        'Please check your connection and try again.',
+      );
+    });
+    unawaited(pending.then<void>((_) {}, onError: (_) {}));
+    for (var i = 0; i < kAnalysisSteps.length; i++) {
+      _analysisStep = i;
+      notifyListeners();
+      if (i == kAnalysisSteps.length - 1) {
+        final result = await pending;
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        return result;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+    }
+    return pending;
   }
 
   /// Failure path shared by [pickAndAnalyze] and [retryAnalysis]: the photo
@@ -376,9 +541,11 @@ class AppState extends ChangeNotifier {
   Future<void> saveCurrentItem({ListingStatus? status}) async {
     final item = _currentItem;
     if (item == null) return;
+    final withPhotos =
+        item.copyWith(extraPhotoPaths: List<String>.from(_extraPhotoPaths));
     final toSave = status == null
-        ? item
-        : item.copyWith(
+        ? withPhotos
+        : withPhotos.copyWith(
             status: status,
             platforms: selectedPlatforms.toList(),
           );
@@ -396,6 +563,14 @@ class AppState extends ChangeNotifier {
   /// Opens an existing library item for editing / re-posting.
   void openItem(Item item) {
     _currentItem = item;
+    // Restore extra photos; bytes lazy-load from disk on demand.
+    _extraPhotoPaths
+      ..clear()
+      ..addAll(item.extraPhotoPaths);
+    _extraPhotoBytes
+      ..clear()
+      ..addAll(List<Uint8List?>.filled(item.extraPhotoPaths.length, null));
+    _currentPhotoBytes = null;
     selectedPlatforms
       ..clear()
       ..addAll(item.platforms.isEmpty
@@ -406,6 +581,9 @@ class AppState extends ChangeNotifier {
 
   void discardCurrentItem() {
     _currentItem = null;
+    _currentPhotoBytes = null;
+    _extraPhotoBytes.clear();
+    _extraPhotoPaths.clear();
     notifyListeners();
   }
 
