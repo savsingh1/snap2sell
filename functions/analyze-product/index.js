@@ -108,12 +108,46 @@ MULTI-PHOTO MODE: you were given {N} photos. They are supposed to show the SAME 
 
 // ---------------------------------------------------------------------------
 // Gemini call with retry — transient failures only.
+//
+// 5xx / network failures: quick retries (a few seconds apart) are enough.
+// 429 (rate limit): Gemini's per-minute quotas can stay exhausted for most
+// of a minute, so a handful of quick retries will NOT survive them. 429s get
+// their own slower path: honor the server's Retry-After hint when present,
+// otherwise back off 5s -> 10s -> 20s (capped), spending up to
+// RATE_LIMIT_WAIT_BUDGET_MS total before the friendly error reaches the app.
+// The budget keeps worst-case runtime inside the function's 120s timeout.
 // ---------------------------------------------------------------------------
-const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
+const TRANSIENT_STATUS = new Set([500, 502, 503, 504]);
 const BACKOFF_MS = [0, 1000, 2000, 4000]; // attempt 1 immediate, then ~1s/2s/4s
+const RATE_LIMIT_WAIT_BUDGET_MS = 45_000; // total 429 waiting per model
+const RATE_LIMIT_SINGLE_WAIT_CAP_MS = 30_000; // one wait never exceeds 30s
+const RATE_LIMIT_MAX_WAITS = 8; // hard cap on 429 waits per model
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Parse a Retry-After header (seconds or HTTP date) into ms, capped.
+// Returns null when the header is absent or unparseable.
+function retryAfterMs(res) {
+  try {
+    const h = res.headers && typeof res.headers.get === 'function'
+      ? res.headers.get('retry-after')
+      : null;
+    if (!h) return null;
+    const secs = Number(h);
+    if (Number.isFinite(secs)) {
+      if (secs < 0) return null; // malformed negative: treat as absent
+      return Math.min(secs * 1000, RATE_LIMIT_SINGLE_WAIT_CAP_MS);
+    }
+    const when = Date.parse(h);
+    if (!Number.isNaN(when)) {
+      return Math.min(Math.max(0, when - Date.now()), RATE_LIMIT_SINGLE_WAIT_CAP_MS);
+    }
+  } catch {
+    // fall through to null
+  }
+  return null;
 }
 
 class GeminiError extends Error {
@@ -139,8 +173,35 @@ async function callGemini(apiKey, model, jpegBase64List, promptText, startedAt) 
   });
 
   let lastErr = null;
-  for (let attempt = 0; attempt < BACKOFF_MS.length; attempt++) {
-    if (attempt > 0) await sleep(BACKOFF_MS[attempt]);
+  let attempt = 0;            // Gemini attempts made (1-based after increment)
+  let rateLimitWaits = 0;     // 429 waits performed so far
+  let rateLimitWaitedMs = 0;  // total ms spent waiting on 429 resets
+  for (;;) {
+    if (attempt > 0) {
+      if (lastErr && lastErr.category === 'RATE_LIMIT') {
+        // 429 path: honor the server's Retry-After hint; otherwise back off
+        // 5s -> 10s -> 20s -> 20s... A per-minute quota reset needs real time.
+        const hintMs = lastErr.retryAfterMs;
+        const waitMs = hintMs != null
+          ? hintMs
+          : Math.min(5000 * 2 ** Math.min(rateLimitWaits, 3), RATE_LIMIT_SINGLE_WAIT_CAP_MS);
+        if (rateLimitWaits >= RATE_LIMIT_MAX_WAITS ||
+            rateLimitWaitedMs + waitMs > RATE_LIMIT_WAIT_BUDGET_MS) {
+          break; // budget spent — surface the rate-limit error below
+        }
+        console.log(JSON.stringify({
+          evt: 'rate_limit_wait', model, waitMs, waitNo: rateLimitWaits + 1,
+        }));
+        await sleep(waitMs);
+        rateLimitWaitedMs += waitMs;
+        rateLimitWaits++;
+      } else {
+        // 5xx / network path: unchanged quick backoff, 4 attempts max.
+        if (attempt >= BACKOFF_MS.length) break;
+        await sleep(BACKOFF_MS[attempt]);
+      }
+    }
+    attempt++;
     const attemptStart = Date.now();
     let res;
     try {
@@ -188,7 +249,7 @@ async function callGemini(apiKey, model, jpegBase64List, promptText, startedAt) 
       console.log(
         JSON.stringify({ evt: 'gemini_attempt', model, attempt, outcome: 'ok', ms: Date.now() - attemptStart, totalMs: Date.now() - startedAt }),
       );
-      return { parsed, model, attempts: attempt + 1 };
+      return { parsed, model, attempts: attempt };
     }
 
     if (res.status === 404) {
@@ -204,12 +265,24 @@ async function callGemini(apiKey, model, jpegBase64List, promptText, startedAt) 
       console.log(JSON.stringify({ evt: 'gemini_auth_error', model, status: res.status }));
       throw new GeminiError('AUTH_ERROR', 'AI service credentials are invalid.', res.status);
     }
+    if (res.status === 429) {
+      // Rate limit: wait it out on the next loop iteration (Retry-After
+      // aware) instead of burning the quick-retry budget.
+      lastErr = new GeminiError(
+        'RATE_LIMIT',
+        'AI service is rate-limited right now.',
+        429,
+      );
+      lastErr.retryAfterMs = retryAfterMs(res);
+      console.log(
+        JSON.stringify({ evt: 'gemini_attempt', model, attempt, outcome: 'http_429', retryAfterMs: lastErr.retryAfterMs, ms: Date.now() - attemptStart }),
+      );
+      continue;
+    }
     if (TRANSIENT_STATUS.has(res.status)) {
       lastErr = new GeminiError(
-        res.status === 429 ? 'RATE_LIMIT' : 'MODEL_ERROR',
-        res.status === 429
-          ? 'AI service is rate-limited right now.'
-          : 'AI service is temporarily unavailable.',
+        'MODEL_ERROR',
+        'AI service is temporarily unavailable.',
         res.status,
       );
       console.log(
