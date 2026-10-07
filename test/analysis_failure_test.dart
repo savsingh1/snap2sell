@@ -12,6 +12,10 @@ class _FailingAiService implements AiService {
   Future<AiAnalysisResult> analyzeItem(Uint8List photoBytes) async {
     throw AiServiceException('Backend exploded.', category: AiErrorCategory.model);
   }
+
+  @override
+  Future<AiAnalysisResult> analyzeItems(List<Uint8List> photos) =>
+      analyzeItem(photos.first);
 }
 
 /// A real (tiny) JPEG so the image pipeline runs before the AI service.
