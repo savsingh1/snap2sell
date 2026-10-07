@@ -66,13 +66,20 @@ class Item {
     List<String>? platforms,
     this.status = ListingStatus.draft,
     DateTime? createdAt,
+    List<String>? extraPhotoPaths,
   })  : platforms = platforms ?? <String>[],
+        extraPhotoPaths = extraPhotoPaths ?? <String>[],
         createdAt = createdAt ?? DateTime.now();
 
   final String id;
 
   /// Local file path of the snapped photo (copied into app documents).
   final String photoPath;
+
+  /// Extra photos added later from the review screen (also in app
+  /// documents). Empty for single-photo listings — fully backward
+  /// compatible with items saved before multi-photo existed.
+  final List<String> extraPhotoPaths;
 
   String title;
   String category;
@@ -99,6 +106,7 @@ class Item {
     String? description,
     List<String>? platforms,
     ListingStatus? status,
+    List<String>? extraPhotoPaths,
   }) {
     return Item(
       id: id,
@@ -113,12 +121,14 @@ class Item {
       platforms: platforms ?? List<String>.from(this.platforms),
       status: status ?? this.status,
       createdAt: createdAt,
+      extraPhotoPaths: extraPhotoPaths ?? List<String>.from(this.extraPhotoPaths),
     );
   }
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'photoPath': photoPath,
+        'extraPhotoPaths': extraPhotoPaths,
         'title': title,
         'category': category,
         'condition': condition.name,
@@ -134,6 +144,10 @@ class Item {
   factory Item.fromJson(Map<String, dynamic> json) => Item(
         id: json['id'] as String,
         photoPath: json['photoPath'] as String,
+        extraPhotoPaths: (json['extraPhotoPaths'] as List<dynamic>?)
+                ?.map((e) => e as String)
+                .toList() ??
+            <String>[],
         title: json['title'] as String? ?? '',
         category: json['category'] as String? ?? 'Miscellaneous',
         condition:
