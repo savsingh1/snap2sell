@@ -1,0 +1,1 @@
+{"dependencies":{"@google-cloud/functions-framework":"^3.4.0","sharp":"^0.33.5"},"description":"Snap2Sell secure Gemini proxy: photo in, structured product identification out. Holds the Gemini API key in Secret Manager so it never ships in the mobile app.","engines":{"node":">=20"},"main":"index.js","name":"snap2sell-analyze-product","version":"1.0.0"}
