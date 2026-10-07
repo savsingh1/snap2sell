@@ -13,6 +13,13 @@ abstract class AiService {
   /// Analyzes [photoBytes] and returns a structured listing draft.
   /// Throws [AiServiceException] when the backend cannot complete the task.
   Future<AiAnalysisResult> analyzeItem(Uint8List photoBytes);
+
+  /// Analyzes several photos of the SAME item in one request and returns a
+  /// structured listing draft. Backends without multi-photo support fall
+  /// back to analyzing the first photo only — the single-photo flow is
+  /// unaffected.
+  Future<AiAnalysisResult> analyzeItems(List<Uint8List> photos) =>
+      analyzeItem(photos.first);
 }
 
 /// Picks the right backend: the secure Snap2Sell analysis backend when its
@@ -115,4 +122,8 @@ class MockAiService implements AiService {
     final sample = _samples[_random.nextInt(_samples.length)];
     return AiAnalysisResult.fromJson(Map<String, dynamic>.from(sample));
   }
+
+  @override
+  Future<AiAnalysisResult> analyzeItems(List<Uint8List> photos) =>
+      analyzeItem(photos.first);
 }
