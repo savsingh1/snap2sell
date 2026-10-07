@@ -27,11 +27,12 @@ jobs:
       - run: flutter analyze
       - run: flutter test
 
-      # Real AI vision needs GEMINI_API_KEY as a GitHub Actions secret
-      # (free key from https://aistudio.google.com — no credit card required).
-      # Without it the app builds with the offline mock AI (demo data).
-      - run: flutter build apk --debug --dart-define=GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
-      - run: flutter build apk --release --dart-define=GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+      # Real AI vision goes through the Snap2Sell backend (Cloud Function),
+      # which holds the Gemini key in Secret Manager. The app only needs the
+      # backend URL + app secret as GitHub Actions secrets. Without them the
+      # app builds with the offline mock AI (demo data).
+      - run: flutter build apk --debug --dart-define=AI_BACKEND_URL=${{ secrets.AI_BACKEND_URL }} --dart-define=APP_API_SECRET=${{ secrets.APP_API_SECRET }}
+      - run: flutter build apk --release --dart-define=AI_BACKEND_URL=${{ secrets.AI_BACKEND_URL }} --dart-define=APP_API_SECRET=${{ secrets.APP_API_SECRET }}
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
