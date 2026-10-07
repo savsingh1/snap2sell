@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/ai_analysis_result.dart';
 import '../models/item.dart';
@@ -79,11 +80,56 @@ class AppState extends ChangeNotifier {
 
   Future<void> init() async {
     _items = await _storage.loadItems();
+    await _loadPayoutPrefs();
     _loaded = true;
     notifyListeners();
   }
 
   Future<void> _persist() => _storage.saveItems(_items);
+
+  // ----- payout preferences ------------------------------------------------
+  // How the seller wants to be paid. Sales happen on the marketplaces, so
+  // this is preference info (e-transfer details, notes), not payment
+  // processing — Snap2Sell never touches the money.
+
+  static const String _prefsEmailKey = 'snap2sell_payout_email';
+  static const String _prefsPhoneKey = 'snap2sell_payout_phone';
+  static const String _prefsNoteKey = 'snap2sell_payout_note';
+
+  String _payoutEmail = '';
+  String _payoutPhone = '';
+  String _payoutNote = '';
+
+  String get payoutEmail => _payoutEmail;
+  String get payoutPhone => _payoutPhone;
+  String get payoutNote => _payoutNote;
+
+  bool get hasPayoutPrefs =>
+      _payoutEmail.isNotEmpty ||
+      _payoutPhone.isNotEmpty ||
+      _payoutNote.isNotEmpty;
+
+  Future<void> _loadPayoutPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    _payoutEmail = prefs.getString(_prefsEmailKey) ?? '';
+    _payoutPhone = prefs.getString(_prefsPhoneKey) ?? '';
+    _payoutNote = prefs.getString(_prefsNoteKey) ?? '';
+  }
+
+  Future<void> savePayoutPrefs({
+    required String email,
+    required String phone,
+    required String note,
+  }) async {
+    _payoutEmail = email.trim();
+    _payoutPhone = phone.trim();
+    _payoutNote = note.trim();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_prefsEmailKey, _payoutEmail);
+    await prefs.setString(_prefsPhoneKey, _payoutPhone);
+    await prefs.setString(_prefsNoteKey, _payoutNote);
+    notifyListeners();
+  }
 
   // ----- capture → analysis flow -----------------------------------------
 
