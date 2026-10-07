@@ -18,7 +18,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python3 - <<'PYEOF'
-          import base64, io, json, os, sys, urllib.request, urllib.error
+          import base64, io, json, os, sys, time, urllib.request, urllib.error
           from PIL import Image, ImageDraw
 
           key = os.environ["GEMINI_API_KEY"]
@@ -53,7 +53,7 @@ jobs:
 
           images = {k: make_image(k) for k in ("wallet", "microwave", "chair")}
 
-          def probe(model, b64):
+          def probe(model, b64, retries=3):
               url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
                      f"{model}:generateContent?key={key}")
               payload = {
@@ -66,25 +66,31 @@ jobs:
                   "generationConfig": {"responseMimeType": "application/json",
                                        "temperature": 0.2},
               }
-              req = urllib.request.Request(
-                  url, data=json.dumps(payload).encode(),
-                  headers={"Content-Type": "application/json"}, method="POST")
-              try:
-                  with urllib.request.urlopen(req, timeout=60) as resp:
-                      body = json.loads(resp.read().decode())
-                  text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
-                  if text.startswith("```"):
-                      text = text.strip("`").replace("json", "", 1).strip()
-                  listing = json.loads(text)
-                  ok = all(k in listing for k in
-                           ("title", "category", "condition", "priceLow",
-                            "priceHigh", "suggestedPrice", "description"))
-                  return (200, ok, listing.get("title", "")[:60])
-              except urllib.error.HTTPError as e:
-                  err = e.read().decode()[:120].replace("\n", " ")
-                  return (e.code, False, err)
-              except Exception as e:
-                  return (-1, False, str(e)[:120])
+              last = (-1, False, "no attempts")
+              for attempt in range(retries):
+                  req = urllib.request.Request(
+                      url, data=json.dumps(payload).encode(),
+                      headers={"Content-Type": "application/json"}, method="POST")
+                  try:
+                      with urllib.request.urlopen(req, timeout=90) as resp:
+                          body = json.loads(resp.read().decode())
+                      text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
+                      if text.startswith("```"):
+                          text = text.strip("`").replace("json", "", 1).strip()
+                      listing = json.loads(text)
+                      ok = all(k in listing for k in
+                               ("title", "category", "condition", "priceLow",
+                                "priceHigh", "suggestedPrice", "description"))
+                      return (200, ok, listing.get("title", "")[:60])
+                  except urllib.error.HTTPError as e:
+                      err = e.read().decode()[:120].replace("\n", " ")
+                      last = (e.code, False, err)
+                      if e.code not in (429, 500, 503):
+                          return last  # permanent — don't retry
+                  except Exception as e:
+                      last = (-1, False, str(e)[:120])
+                  time.sleep(10 * (attempt + 1))  # backoff before retry
+              return last
 
           # Primary model must handle all three item types.
           primary = "gemini-3.6-flash"
