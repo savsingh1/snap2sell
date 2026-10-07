@@ -263,7 +263,17 @@ class AppState extends ChangeNotifier {
 
   /// Drives the visible step indicator while the AI call runs.
   Future<AiAnalysisResult> _runPipelineWithSteps(Uint8List photoBytes) async {
-    final pending = _aiService.analyzeItem(photoBytes);
+    // Overall cap: the model fallback chain can otherwise grind through
+    // per-model timeouts for ~3 minutes on a bad day. Fail fast with the
+    // honest error path (retry / manual entry) instead of spinning forever.
+    final pending =
+        _aiService.analyzeItem(photoBytes).timeout(const Duration(seconds: 75),
+            onTimeout: () {
+      throw AiServiceException(
+        'The AI service is taking too long to respond. '
+        'Please check your connection and try again.',
+      );
+    });
     // Guard: if the AI fails fast, the error would otherwise sit unhandled
     // while the step animation plays. This marks it handled; the await
     // below still receives the same outcome.
