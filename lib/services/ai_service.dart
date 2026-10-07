@@ -21,10 +21,10 @@ abstract class AiService {
 /// otherwise the offline mock (the default — zero keys, zero cost).
 abstract final class AiServiceFactory {
   static AiService create() {
-    if (AppConfig.hasOpenAiKey) {
-      return OpenAiVisionService(
-        apiKey: AppConfig.openAiApiKey,
-        model: AppConfig.openAiModel,
+    if (AppConfig.hasGeminiKey) {
+      return GeminiVisionService(
+        apiKey: AppConfig.geminiApiKey,
+        model: AppConfig.geminiModel,
       );
     }
     return MockAiService();
@@ -114,26 +114,25 @@ class MockAiService implements AiService {
   }
 }
 
-/// Live backend: sends the photo to a vision-capable chat-completions API
-/// (OpenAI-compatible) and parses the strict-JSON listing it returns.
+/// Live backend: sends the photo to Google's Gemini vision API
+/// (free tier — key from https://aistudio.google.com, no credit card)
+/// and parses the strict-JSON listing it returns.
 ///
 /// Any failure (network, bad key, unparsable response) throws
 /// [AiServiceException] — the caller ([AppState]) falls back to
 /// [MockAiService] so the demo never hard-crashes on a key problem.
-class OpenAiVisionService implements AiService {
-  OpenAiVisionService({
+class GeminiVisionService implements AiService {
+  GeminiVisionService({
     required this.apiKey,
-    this.model = 'gpt-4o-mini',
-    this.endpoint = 'https://api.openai.com/v1/chat/completions',
+    this.model = 'gemini-2.5-flash',
     http.Client? client,
   }) : _client = client ?? http.Client();
 
   final String apiKey;
   final String model;
-  final String endpoint;
   final http.Client _client;
 
-  static const String _systemPrompt = '''
+  static const String _systemPrompt = """
 You are Snap2Sell's listing expert. Given a photo of a household item someone
 wants to resell, respond with ONLY a single JSON object (no markdown fences,
 no commentary) with exactly these fields:
@@ -148,41 +147,38 @@ no commentary) with exactly these fields:
 }
 Base the price range on typical second-hand marketplace values in North America.
 If the photo is unclear, make your best guess and note the uncertainty in the description.
-''';
+""";
 
   @override
   Future<AiAnalysisResult> analyzeItem(Uint8List photoBytes) async {
     try {
       final base64Image = base64Encode(photoBytes);
+      final uri = Uri.parse(
+        'https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent',
+      ).replace(queryParameters: {'key': apiKey});
 
       final response = await _client
           .post(
-            Uri.parse(endpoint),
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer $apiKey',
-            },
+            uri,
+            headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
-              'model': model,
-              'max_tokens': 800,
-              'messages': [
-                {'role': 'system', 'content': _systemPrompt},
+              'contents': [
                 {
-                  'role': 'user',
-                  'content': [
+                  'parts': [
+                    {'text': '$_systemPrompt\n\nAnalyze this item and return the listing JSON.'},
                     {
-                      'type': 'text',
-                      'text': 'Analyze this item and return the listing JSON.',
-                    },
-                    {
-                      'type': 'image_url',
-                      'image_url': {
-                        'url': 'data:image/jpeg;base64,$base64Image',
+                      'inline_data': {
+                        'mime_type': 'image/jpeg',
+                        'data': base64Image,
                       },
                     },
                   ],
                 },
               ],
+              'generationConfig': {
+                'responseMimeType': 'application/json',
+                'temperature': 0.2,
+              },
             }),
           )
           .timeout(const Duration(seconds: 60));
@@ -194,14 +190,15 @@ If the photo is unclear, make your best guess and note the uncertainty in the de
       }
 
       final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-      final choices = decoded['choices'] as List<dynamic>?;
-      if (choices == null || choices.isEmpty) {
-        throw AiServiceException('Vision API returned no choices.');
+      final candidates = decoded['candidates'] as List<dynamic>?;
+      if (candidates == null || candidates.isEmpty) {
+        throw AiServiceException('Vision API returned no candidates.');
       }
-      final message =
-          (choices.first as Map<String, dynamic>?)?['message']
+      final content =
+          (candidates.first as Map<String, dynamic>?)?['content']
               as Map<String, dynamic>?;
-      var text = (message?['content'] as String? ?? '').trim();
+      final parts = content?['parts'] as List<dynamic>?;
+      var text = ((parts?.first as Map<String, dynamic>?)?['text'] as String? ?? '').trim();
       if (text.isEmpty) {
         throw AiServiceException('Vision API returned an empty response.');
       }
