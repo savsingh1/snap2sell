@@ -27,10 +27,11 @@ jobs:
       - run: flutter analyze
       - run: flutter test
 
-      # Real AI vision needs OPENAI_API_KEY as a GitHub Actions secret.
+      # Real AI vision needs GEMINI_API_KEY as a GitHub Actions secret
+      # (free key from https://aistudio.google.com — no credit card required).
       # Without it the app builds with the offline mock AI (demo data).
-      - run: flutter build apk --debug --dart-define=OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-      - run: flutter build apk --release --dart-define=OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+      - run: flutter build apk --debug --dart-define=GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+      - run: flutter build apk --release --dart-define=GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
