@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../app_theme.dart';
@@ -156,6 +157,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
             path: item.photoPath,
             bytes: appState.currentPhotoBytes,
           ),
+          const SizedBox(height: 12),
+          _PhotoStrip(appState: appState, item: item),
           const SizedBox(height: 16),
           _label('Item title'),
           TextField(
@@ -277,6 +280,259 @@ class _ResultsScreenState extends State<ResultsScreen> {
           ),
         ),
       );
+}
+
+/// Multi-photo strip under the main preview: the user can add up to 5 photos
+/// total (camera or gallery), remove extras, drag-reorder them, and re-run
+/// the AI analysis on all photos at once. The single-photo flow is untouched.
+class _PhotoStrip extends StatelessWidget {
+  const _PhotoStrip({required this.appState, required this.item});
+
+  final AppState appState;
+  final Item item;
+
+  Future<void> _pickSource(BuildContext context) async {
+    final choice = await showModalBottomSheet<ImageSource>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading:
+                    const Icon(Icons.photo_camera_rounded, size: 28),
+                title: const Text('Take a Photo',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                onTap: () =>
+                    Navigator.of(sheetContext).pop(ImageSource.camera),
+              ),
+              ListTile(
+                leading:
+                    const Icon(Icons.photo_library_rounded, size: 28),
+                title: const Text('Choose from Gallery',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                onTap: () =>
+                    Navigator.of(sheetContext).pop(ImageSource.gallery),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (choice != null && context.mounted) {
+      await appState.addPhoto(choice);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final extras = appState.extraPhotoPaths;
+    final total = 1 + extras.length;
+    final analyzing = appState.isAnalyzing;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              'Photos ($total of ${AppState.maxPhotosPerListing})',
+              style: const TextStyle(
+                fontWeight: FontWeight.w700,
+                fontSize: 14,
+                color: SnapColors.textDark,
+              ),
+            ),
+            const Spacer(),
+            if (extras.length > 1)
+              const Text(
+                'Drag to reorder',
+                style:
+                    TextStyle(fontSize: 12, color: SnapColors.textMuted),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 76,
+          child: Row(
+            children: [
+              _Thumb(
+                path: item.photoPath,
+                bytes: appState.currentPhotoBytes,
+                badge: 'Main',
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ReorderableListView(
+                  scrollDirection: Axis.horizontal,
+                  // onReorderItem supplies an already-adjusted newIndex.
+                  onReorderItem: (oldIndex, newIndex) =>
+                      appState.moveExtraPhoto(oldIndex, newIndex),
+                  children: [
+                    for (var i = 0; i < extras.length; i++)
+                      Padding(
+                        key: ValueKey('extra-$i-${extras[i]}'),
+                        padding: const EdgeInsets.only(right: 8),
+                        child: _Thumb(
+                          path: extras[i],
+                          onRemove: analyzing
+                              ? null
+                              : () => appState.removeExtraPhotoAt(i),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (appState.canAddMorePhotos) ...[
+                const SizedBox(width: 8),
+                _AddTile(
+                    onTap: analyzing ? null : () => _pickSource(context)),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed:
+                analyzing ? null : () => appState.reanalyzeWithPhotos(),
+            icon: analyzing
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child:
+                        CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.autorenew_rounded, size: 18),
+            label: Text(analyzing
+                ? 'Analyzing $total photo${total == 1 ? '' : 's'}…'
+                : 'Re-analyze with $total photo${total == 1 ? '' : 's'}'),
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.only(top: 6),
+          child: Text(
+            'More angles help the AI: front, back, labels, model numbers, and any damage.',
+            style:
+                TextStyle(fontSize: 12, color: SnapColors.textMuted),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _Thumb extends StatelessWidget {
+  const _Thumb({required this.path, this.bytes, this.badge, this.onRemove});
+
+  final String path;
+  final Uint8List? bytes;
+  final String? badge;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget image;
+    if (kIsWeb && bytes != null) {
+      image = Image.memory(bytes!, fit: BoxFit.cover);
+    } else if (!kIsWeb && File(path).existsSync()) {
+      image = Image.file(File(path), fit: BoxFit.cover);
+    } else {
+      image = Container(
+        color: SnapColors.primaryLight,
+        child: const Icon(Icons.image_rounded,
+            color: SnapColors.primary),
+      );
+    }
+    return SizedBox(
+      width: 76,
+      height: 76,
+      child: Stack(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: SizedBox.expand(child: image),
+          ),
+          if (badge != null)
+            Positioned(
+              left: 4,
+              bottom: 4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  badge!,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          if (onRemove != null)
+            Positioned(
+              right: 2,
+              top: 2,
+              child: GestureDetector(
+                onTap: onRemove,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: const BoxDecoration(
+                    color: Colors.black54,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.close_rounded,
+                    color: Colors.white,
+                    size: 14,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AddTile extends StatelessWidget {
+  const _AddTile({required this.onTap});
+
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 76,
+      height: 76,
+      child: OutlinedButton(
+        onPressed: onTap,
+        style: OutlinedButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          side: const BorderSide(color: Color(0xFFE4E0F2)),
+          padding: EdgeInsets.zero,
+        ),
+        child: const Icon(
+          Icons.add_a_photo_rounded,
+          color: SnapColors.primary,
+        ),
+      ),
+    );
+  }
 }
 
 class _PhotoPreview extends StatelessWidget {
