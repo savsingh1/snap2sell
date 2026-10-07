@@ -93,7 +93,7 @@ jobs:
               return last
 
           # Primary model must handle all three item types.
-          primary = "gemini-3.6-flash"
+          primary = "gemini-3.8-flash"
           all_ok = True
           for kind, b64 in images.items():
               status, ok, info = probe(primary, b64)
@@ -103,7 +103,7 @@ jobs:
 
           # Also confirm the fallback candidates are reachable (any 2xx/503,
           # but not 404-retired) using the wallet image.
-          for model in ("gemini-3.5-flash", "gemini-3.8-flash"):
+          for model in ("gemini-3.6-flash", "gemini-3.5-flash"):
               status, ok, info = probe(model, images["wallet"])
               retired = status == 404
               print(f"IMAGE=wallet MODEL={model} STATUS={status} RETIRED={retired} "
