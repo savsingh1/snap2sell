@@ -101,6 +101,102 @@ class Snap2SellBackendService implements AiService {
     throw err;
   }
 
+  /// Multi-photo analysis: sends up to 5 photos of the same item in one
+  /// request via the backend's `images` array. Same retry/failure semantics
+  /// as [analyzeItem]; the single-photo method is untouched.
+  @override
+  Future<AiAnalysisResult> analyzeItems(List<Uint8List> photos) async {
+    assert(photos.isNotEmpty && photos.length <= 5);
+    final startedAt = DateTime.now();
+    AiServiceException? lastError;
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      final attemptStart = DateTime.now();
+      try {
+        final result = await _attemptMultiOnce(photos);
+        final ms = DateTime.now().difference(startedAt).inMilliseconds;
+        AiLogger.attempt(
+          attempt: attempt,
+          durationMs: DateTime.now().difference(attemptStart).inMilliseconds,
+          statusCode: 200,
+        );
+        AiLogger.success(
+          durationMs: ms,
+          attempts: attempt,
+          confidence: result.confidence,
+          recognized: result.recognized,
+        );
+        return _toListing(result);
+      } on _TransportFailure catch (e) {
+        lastError = e.error;
+        AiLogger.attempt(
+          attempt: attempt,
+          durationMs: DateTime.now().difference(attemptStart).inMilliseconds,
+          statusCode: 0,
+        );
+        if (attempt == 2) break;
+        await Future<void>.delayed(const Duration(seconds: 1));
+      } on AiServiceException catch (e) {
+        final ms = DateTime.now().difference(startedAt).inMilliseconds;
+        AiLogger.failure(
+          category: e.category,
+          durationMs: ms,
+          attempts: attempt,
+        );
+        rethrow;
+      }
+    }
+    final ms = DateTime.now().difference(startedAt).inMilliseconds;
+    final err = lastError ??
+        AiServiceException(
+          'Network failure.',
+          category: AiErrorCategory.network,
+        );
+    AiLogger.failure(category: err.category, durationMs: ms, attempts: 2);
+    throw err;
+  }
+
+  Future<ProductIdentification> _attemptMultiOnce(
+      List<Uint8List> photos) async {
+    http.Response response;
+    try {
+      response = await _client
+          .post(
+            Uri.parse('$backendUrl/'),
+            headers: {
+              'Content-Type': 'application/json',
+              if (appSecret.isNotEmpty) 'x-app-secret': appSecret,
+            },
+            body: jsonEncode({
+              'images': [for (final p in photos) base64Encode(p)],
+              'mimeType': 'image/jpeg',
+            }),
+          )
+          .timeout(_attemptTimeout);
+    } on TimeoutException {
+      throw _TransportFailure(AiServiceException(
+        'Analysis timed out.',
+        category: AiErrorCategory.timeout,
+      ));
+    } on SocketException {
+      throw _TransportFailure(AiServiceException(
+        'Network failure.',
+        category: AiErrorCategory.network,
+      ));
+    } on HttpException {
+      throw _TransportFailure(AiServiceException(
+        'Network failure.',
+        category: AiErrorCategory.network,
+      ));
+    } on http.ClientException {
+      throw _TransportFailure(AiServiceException(
+        'Network failure.',
+        category: AiErrorCategory.network,
+      ));
+    }
+
+    return _parseResponse(response);
+  }
+
   Future<ProductIdentification> _attemptOnce(Uint8List photoBytes) async {
     http.Response response;
     try {
