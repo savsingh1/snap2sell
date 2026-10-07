@@ -1,8 +1,11 @@
 name: verify-gemini-model
 
-# Manual smoke test: proves which Gemini model accepts image input and returns
-# a valid listing JSON, using the repo's GEMINI_API_KEY secret.
-# The key is passed only as an env var and NEVER printed or logged.
+# End-to-end smoke test: proves a product photo can travel the complete flow
+#   app bytes -> Snap2Sell backend (Cloud Function) -> Gemini
+#   -> structured product identification -> listing fields
+# using the repo's AI_BACKEND_URL + APP_API_SECRET secrets.
+# The Gemini API key itself never appears here — it lives in the function's
+# Secret Manager.
 on:
   workflow_dispatch:
 
@@ -13,102 +16,88 @@ jobs:
       - name: Install dependencies
         run: python3 -m pip install -q pillow
 
-      - name: Probe candidate models with a real image request
+      - name: Probe the analysis backend end to end
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AI_BACKEND_URL: ${{ secrets.AI_BACKEND_URL }}
+          APP_API_SECRET: ${{ secrets.APP_API_SECRET }}
         run: |
           python3 - <<'PYEOF'
           import base64, io, json, os, sys, time, urllib.request, urllib.error
           from PIL import Image, ImageDraw
 
-          key = os.environ["GEMINI_API_KEY"]
-          assert key and len(key) > 10, "GEMINI_API_KEY secret is missing!"
+          backend = os.environ.get("AI_BACKEND_URL", "").rstrip("/")
+          secret = os.environ.get("APP_API_SECRET", "")
+          assert backend.startswith("http"), "AI_BACKEND_URL secret is missing!"
+          assert len(secret) > 8, "APP_API_SECRET secret is missing!"
 
           def make_image(kind):
               """Small synthetic test images for three item types."""
-              img = Image.new("RGB", (320, 240), (210, 190, 160))
+              img = Image.new("RGB", (640, 480), (210, 190, 160))
               d = ImageDraw.Draw(img)
               if kind == "wallet":
-                  d.rectangle([90, 60, 230, 180], fill=(120, 80, 50),
+                  d.rectangle([180, 120, 460, 360], fill=(120, 80, 50),
+                              outline=(60, 40, 20), width=8)
+                  d.rectangle([300, 210, 380, 270], fill=(200, 170, 120),
                               outline=(60, 40, 20), width=4)
-                  d.rectangle([150, 105, 190, 135], fill=(200, 170, 120),
-                              outline=(60, 40, 20), width=2)
-                  d.text((100, 190), "TEST WALLET", fill=(40, 40, 40))
+                  d.text((200, 380), "TEST WALLET", fill=(40, 40, 40))
               elif kind == "microwave":
-                  d.rectangle([60, 70, 260, 190], fill=(230, 230, 230),
-                              outline=(80, 80, 80), width=4)
-                  d.rectangle([80, 90, 190, 170], fill=(30, 30, 30))
-                  d.ellipse([215, 95, 245, 125], outline=(150, 40, 40), width=3)
-                  d.ellipse([215, 135, 245, 165], outline=(150, 40, 40), width=3)
-                  d.text((80, 195), "TEST MICROWAVE", fill=(40, 40, 40))
+                  d.rectangle([120, 140, 520, 380], fill=(230, 230, 230),
+                              outline=(80, 80, 80), width=8)
+                  d.rectangle([160, 180, 380, 340], fill=(30, 30, 30))
+                  d.ellipse([430, 190, 490, 250], outline=(150, 40, 40), width=6)
+                  d.ellipse([430, 270, 490, 330], outline=(150, 40, 40), width=6)
+                  d.text((160, 390), "TEST MICROWAVE", fill=(40, 40, 40))
               else:  # chair
-                  d.rectangle([140, 40, 180, 140], fill=(140, 100, 60), width=4)
-                  d.rectangle([100, 140, 220, 165], fill=(140, 100, 60))
-                  d.rectangle([110, 165, 125, 230], fill=(100, 70, 40))
-                  d.rectangle([195, 165, 210, 230], fill=(100, 70, 40))
-                  d.text((110, 200), "TEST CHAIR", fill=(40, 40, 40))
+                  d.rectangle([280, 80, 360, 280], fill=(140, 100, 60), width=8)
+                  d.rectangle([200, 280, 440, 330], fill=(140, 100, 60))
+                  d.rectangle([220, 330, 250, 460], fill=(100, 70, 40))
+                  d.rectangle([390, 330, 420, 460], fill=(100, 70, 40))
+                  d.text((220, 400), "TEST CHAIR", fill=(40, 40, 40))
               buf = io.BytesIO()
-              img.save(buf, format="JPEG", quality=70)
+              img.save(buf, format="JPEG", quality=80)
               return base64.b64encode(buf.getvalue()).decode()
+
+          def post_image(b64, use_secret=True, timeout=90):
+              payload = json.dumps(
+                  {"imageBase64": b64, "mimeType": "image/jpeg"}).encode()
+              headers = {"Content-Type": "application/json"}
+              if use_secret:
+                  headers["x-app-secret"] = secret
+              req = urllib.request.Request(backend + "/", data=payload,
+                                           headers=headers, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as resp:
+                      return resp.status, json.loads(resp.read().decode())
+              except urllib.error.HTTPError as e:
+                  try:
+                      body = json.loads(e.read().decode())
+                  except Exception:
+                      body = {}
+                  return e.code, body
 
           images = {k: make_image(k) for k in ("wallet", "microwave", "chair")}
 
-          def probe(model, b64, retries=3):
-              url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-                     f"{model}:generateContent?key={key}")
-              payload = {
-                  "contents": [{
-                      "parts": [
-                          {"text": 'Analyze this item. Respond with ONLY a JSON object: {"title": string, "category": string, "condition": string, "priceLow": number, "priceHigh": number, "suggestedPrice": number, "description": string}.'},
-                          {"inline_data": {"mime_type": "image/jpeg", "data": b64}},
-                      ]
-                  }],
-                  "generationConfig": {"responseMimeType": "application/json",
-                                       "temperature": 0.2},
-              }
-              last = (-1, False, "no attempts")
-              for attempt in range(retries):
-                  req = urllib.request.Request(
-                      url, data=json.dumps(payload).encode(),
-                      headers={"Content-Type": "application/json"}, method="POST")
-                  try:
-                      with urllib.request.urlopen(req, timeout=90) as resp:
-                          body = json.loads(resp.read().decode())
-                      text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
-                      if text.startswith("```"):
-                          text = text.strip("`").replace("json", "", 1).strip()
-                      listing = json.loads(text)
-                      ok = all(k in listing for k in
-                               ("title", "category", "condition", "priceLow",
-                                "priceHigh", "suggestedPrice", "description"))
-                      return (200, ok, listing.get("title", "")[:60])
-                  except urllib.error.HTTPError as e:
-                      err = e.read().decode()[:120].replace("\n", " ")
-                      last = (e.code, False, err)
-                      if e.code not in (429, 500, 503):
-                          return last  # permanent — don't retry
-                  except Exception as e:
-                      last = (-1, False, str(e)[:120])
-                  time.sleep(10 * (attempt + 1))  # backoff before retry
-              return last
+          # 1) Negative test: no app secret must be rejected.
+          status, _ = post_image(images["wallet"], use_secret=False)
+          print(f"AUTH_CHECK no-secret STATUS={status}")
+          assert status == 401, f"expected 401 without secret, got {status}"
 
-          # Primary model must handle all three item types.
-          primary = "gemini-3.8-flash"
+          # 2) End-to-end: each image must return structured identification.
+          required = ("suggested_title", "category", "condition", "confidence",
+                      "short_description", "suggested_price")
           all_ok = True
           for kind, b64 in images.items():
-              status, ok, info = probe(primary, b64)
-              print(f"IMAGE={kind} MODEL={primary} STATUS={status} "
-                    f"VALID_JSON_FIELDS={ok} INFO={info}", flush=True)
-              all_ok = all_ok and (status == 200 and ok)
+              status, body = post_image(b64)
+              ok_fields = (status == 200 and
+                           all(k in body for k in required) and
+                           isinstance(body.get("confidence"), (int, float)) and
+                           0 <= body["confidence"] <= 100)
+              title = str(body.get("suggested_title", ""))[:60]
+              print(f"IMAGE={kind} STATUS={status} VALID={ok_fields} "
+                    f"CONFIDENCE={body.get('confidence')} TITLE={title}")
+              all_ok = all_ok and ok_fields
+              time.sleep(2)
 
-          # Also confirm the fallback candidates are reachable (any 2xx/503,
-          # but not 404-retired) using the wallet image.
-          for model in ("gemini-3.6-flash", "gemini-3.5-flash"):
-              status, ok, info = probe(model, images["wallet"])
-              retired = status == 404
-              print(f"IMAGE=wallet MODEL={model} STATUS={status} RETIRED={retired} "
-                    f"INFO={info[:80]}", flush=True)
-
-          print(f"PRIMARY_MODEL_OK_ALL_IMAGES={all_ok}", flush=True)
+          print(f"BACKEND_E2E_OK={all_ok}")
           sys.exit(0 if all_ok else 1)
           PYEOF
