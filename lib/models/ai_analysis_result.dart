@@ -23,7 +23,8 @@ class AiAnalysisResult {
   final double suggestedPrice;
   final String description;
 
-  /// 'exact' or 'product_family' (see [ProgressiveIdentification.levelOf]).
+  /// 'exact', 'product_family' (see [ProgressiveIdentification.levelOf]),
+  /// or 'property' for the Workstream B real-estate flow.
   final String identificationLevel;
 
   /// 1 = exact estimate, 2 = preliminary range, 3 = no range available.
