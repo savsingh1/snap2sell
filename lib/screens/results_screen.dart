@@ -10,6 +10,7 @@ import '../app_theme.dart';
 import '../models/item.dart';
 import '../providers/app_state.dart';
 import 'platforms_screen.dart';
+import 'property_report_screen.dart';
 
 const List<String> kCategories = [
   'Furniture',
@@ -22,6 +23,7 @@ const List<String> kCategories = [
   'Sports & Outdoors',
   'Baby & Kids',
   'Home & Garden',
+  'Real Estate',
   'Miscellaneous',
 ];
 
@@ -242,6 +244,66 @@ class _ResultsScreenState extends State<ResultsScreen> {
                           onPressed: () =>
                               appState.dismissPartialNotice(),
                           child: const Text('Enter details manually'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          // Workstream B: real-estate property flow. The photo was detected
+          // as a residential property — offer the valuation report. This
+          // banner is additive; every other category renders exactly as
+          // before.
+          if (item.category == 'Real Estate' &&
+              appState.propertyReport != null &&
+              appState.analysisError == null) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F5E9),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFA5D6A7)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    appState.propertyReport!.nextStepMessage,
+                    style: const TextStyle(
+                        fontSize: 13, color: Color(0xFF1B5E20)),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => const PropertyReportScreen(
+                                    openAddressForm: true),
+                              ),
+                            );
+                          },
+                          child: const Text('Add address'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    const PropertyReportScreen(),
+                              ),
+                            );
+                          },
+                          child: const Text('View property report'),
                         ),
                       ),
                     ],
