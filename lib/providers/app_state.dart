@@ -12,6 +12,8 @@ import '../services/ai_logger.dart';
 import '../services/ai_service.dart';
 import '../services/image_service.dart';
 import '../services/listing_service.dart';
+import '../services/real_estate/property_models.dart';
+import '../services/real_estate/real_estate_ai_service.dart';
 import '../services/storage_service.dart';
 
 /// Labels shown on the Processing screen while the AI pipeline runs.
@@ -33,7 +35,11 @@ class AppState extends ChangeNotifier {
     ImageService? imageService,
   })  : _storage = storage ?? LocalStorageService(),
         _listing = listing ?? ListingService(),
-        _aiService = aiService ?? AiServiceFactory.create(),
+        // Workstream B: the default pipeline is wrapped with the additive
+        // real-estate decorator. Non-real-estate results pass through
+        // byte-identical; injected test doubles bypass the wrapper entirely.
+        _aiService =
+            aiService ?? RealEstateAiService(AiServiceFactory.create()),
         _imagePicker = imagePicker ?? ImagePicker(),
         _imageService = imageService ?? ImageService();
 
@@ -97,6 +103,30 @@ class AppState extends ChangeNotifier {
   String? get analysisError => _analysisError;
   String? get partialNotice => _partialNotice;
   ListingService get listingService => _listing;
+
+  /// Real-estate property report for the current analysis, when the photo
+  /// was detected as residential real estate (Workstream B). Null for
+  /// ordinary product listings. Reports are session-scoped — they are not
+  /// persisted with the saved item (future work).
+  PropertyValuationReport? get propertyReport {
+    final svc = _aiService;
+    return svc is RealEstateAiService ? svc.lastPropertyReport : null;
+  }
+
+  /// Confirms the property address for the real-estate flow. The address
+  /// is user-entered only — NEVER inferred from the photo. Re-runs the
+  /// valuation and refreshes the current item's title/description.
+  Future<void> setPropertyAddress(PropertyAddress address) async {
+    final svc = _aiService;
+    final item = _currentItem;
+    if (svc is! RealEstateAiService || item == null) return;
+    final result = await svc.attachAddress(address);
+    _currentItem = item.copyWith(
+      title: result.title,
+      description: result.description,
+    );
+    notifyListeners();
+  }
 
   /// Sum of suggested prices across non-sold items (dashboard summary).
   double get estimatedInventoryValue => _items
@@ -582,6 +612,9 @@ class AppState extends ChangeNotifier {
   /// Opens an existing library item for editing / re-posting.
   void openItem(Item item) {
     _partialNotice = null;
+    // Saved items do not persist the session-scoped property report.
+    final svc = _aiService;
+    if (svc is RealEstateAiService) svc.clearReport();
     _currentItem = item;
     // Restore extra photos; bytes lazy-load from disk on demand.
     _extraPhotoPaths
@@ -605,6 +638,8 @@ class AppState extends ChangeNotifier {
     _extraPhotoBytes.clear();
     _extraPhotoPaths.clear();
     _partialNotice = null;
+    final svc = _aiService;
+    if (svc is RealEstateAiService) svc.clearReport();
     notifyListeners();
   }
 
