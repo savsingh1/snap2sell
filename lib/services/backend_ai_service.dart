@@ -318,11 +318,23 @@ class Snap2SellBackendService implements AiService {
 
   /// Phase 6 — low-confidence recovery: instead of a weak listing, tell the
   /// user exactly which photo to take next.
+  ///
+  /// Apple/Tesla patch (brand-gated): when the weak signal is only "exact
+  /// variant unknown" but the Apple/Tesla product family is confidently
+  /// identified, the listing continues instead of the hard "clearer photo"
+  /// block. [ProgressiveIdentification] keeps this gate brand-specific, so
+  /// every other product behaves exactly as before. The soft follow-up
+  /// notice is attached to the result in
+  /// [AiAnalysisResult.fromIdentification].
   void _throwIfLowConfidence(ProductIdentification id) {
     final weak = !id.recognized ||
         id.needsMorePhotos ||
         id.confidence < lowConfidenceThreshold;
     if (!weak) return;
+    if (ProgressiveIdentification.isFamilyMatch(id,
+        minConfidence: lowConfidenceThreshold)) {
+      return; // confident family identification — continue, don't block.
+    }
     final tips = id.recommendedPhotos.where((s) => s.isNotEmpty).take(2).toList();
     final guidance = tips.isNotEmpty
         ? 'We need a clearer photo to identify this product. ${tips.join(' ')}'
@@ -340,6 +352,7 @@ class Snap2SellBackendService implements AiService {
       priceLow: price.low,
       priceHigh: price.high,
       suggestedPrice: price.suggested,
+      pricingTier: price.tier,
     );
   }
 

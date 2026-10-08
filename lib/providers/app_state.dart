@@ -76,6 +76,11 @@ class AppState extends ChangeNotifier {
   int _analysisStep = 0;
   String? _analysisError;
 
+  /// Soft follow-up shown after a successful Apple/Tesla product-family
+  /// identification (exact variant unknown). The listing IS created — this
+  /// is guidance, not a block. Null for ordinary exact identifications.
+  String? _partialNotice;
+
   /// Platforms the user ticked on the Price & Platforms screen.
   final Set<String> selectedPlatforms = {
     Marketplace.facebook.name,
@@ -90,6 +95,7 @@ class AppState extends ChangeNotifier {
   bool get isAnalyzing => _isAnalyzing;
   int get analysisStep => _analysisStep;
   String? get analysisError => _analysisError;
+  String? get partialNotice => _partialNotice;
   ListingService get listingService => _listing;
 
   /// Sum of suggested prices across non-sold items (dashboard summary).
@@ -204,6 +210,7 @@ class AppState extends ChangeNotifier {
     _isAnalyzing = true;
     _analysisStep = 0;
     _analysisError = null;
+    _partialNotice = null;
     notifyListeners();
 
     try {
@@ -212,6 +219,7 @@ class AppState extends ChangeNotifier {
       // backend always gets a clean, honest MIME type.
       final processed = _imageService.process(bytes);
       final result = await _runPipelineWithSteps(processed.bytes);
+      _partialNotice = result.partialNotice;
       _currentItem = _currentItem!.copyWith(
         title: result.title,
         category: result.category,
@@ -248,11 +256,13 @@ class AppState extends ChangeNotifier {
     _isAnalyzing = true;
     _analysisStep = 0;
     _analysisError = null;
+    _partialNotice = null;
     notifyListeners();
     try {
       // Compress the original photo again (same as the first attempt).
       final processed = _imageService.process(bytes);
       final result = await _runPipelineWithSteps(processed.bytes);
+      _partialNotice = result.partialNotice;
       _currentItem = _currentItem!.copyWith(
         title: result.title,
         category: result.category,
@@ -280,6 +290,13 @@ class AppState extends ChangeNotifier {
   /// manually. The photo and any typed values are preserved.
   void clearAnalysisError() {
     _analysisError = null;
+    notifyListeners();
+  }
+
+  /// Dismisses the partial-identification banner (Continue listing / Add
+  /// model photo / Enter details manually). The created listing is kept.
+  void dismissPartialNotice() {
+    _partialNotice = null;
     notifyListeners();
   }
 
@@ -371,11 +388,13 @@ class AppState extends ChangeNotifier {
     _isAnalyzing = true;
     _analysisStep = 0;
     _analysisError = null;
+    _partialNotice = null;
     notifyListeners();
     try {
       final processed =
           photos.map((p) => _imageService.process(p).bytes).toList();
       final result = await _runMultiPipelineWithSteps(processed);
+      _partialNotice = result.partialNotice;
       _currentItem = _currentItem!.copyWith(
         title: result.title,
         category: result.category,
@@ -562,6 +581,7 @@ class AppState extends ChangeNotifier {
 
   /// Opens an existing library item for editing / re-posting.
   void openItem(Item item) {
+    _partialNotice = null;
     _currentItem = item;
     // Restore extra photos; bytes lazy-load from disk on demand.
     _extraPhotoPaths
@@ -584,6 +604,7 @@ class AppState extends ChangeNotifier {
     _currentPhotoBytes = null;
     _extraPhotoBytes.clear();
     _extraPhotoPaths.clear();
+    _partialNotice = null;
     notifyListeners();
   }
 

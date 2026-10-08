@@ -25,6 +25,47 @@ const List<String> kCategories = [
   'Miscellaneous',
 ];
 
+/// Photo-source picker shared by the photo strip and the partial-
+/// identification banner. Adds the chosen photo to the current listing.
+Future<void> _addPhotoFromSourceSheet(
+    BuildContext context, AppState appState) async {
+  final choice = await showModalBottomSheet<ImageSource>(
+    context: context,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading:
+                  const Icon(Icons.photo_camera_rounded, size: 28),
+              title: const Text('Take a Photo',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              onTap: () =>
+                  Navigator.of(sheetContext).pop(ImageSource.camera),
+            ),
+            ListTile(
+              leading:
+                  const Icon(Icons.photo_library_rounded, size: 28),
+              title: const Text('Choose from Gallery',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              onTap: () =>
+                  Navigator.of(sheetContext).pop(ImageSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+  if (choice != null && context.mounted) {
+    await appState.addPhoto(choice);
+  }
+}
+
 /// Step 4: review + edit the AI-generated listing before posting.
 class ResultsScreen extends StatefulWidget {
   const ResultsScreen({super.key});
@@ -143,6 +184,63 @@ class _ResultsScreenState extends State<ResultsScreen> {
                       Expanded(
                         child: OutlinedButton(
                           onPressed: () => appState.clearAnalysisError(),
+                          child: const Text('Enter details manually'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+          // Apple/Tesla patch: the product family was identified but not the
+          // exact variant. The listing WAS created — this banner is guidance,
+          // not a block. The user continues, adds a model photo, or edits
+          // manually; nothing forces a restart of the analysis.
+          if (appState.partialNotice != null &&
+              appState.analysisError == null) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F0FE),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF90CAF9)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    appState.partialNotice!,
+                    style: const TextStyle(
+                        fontSize: 13, color: Color(0xFF0D47A1)),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => appState.dismissPartialNotice(),
+                      child: const Text('Continue listing'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () {
+                            appState.dismissPartialNotice();
+                            _addPhotoFromSourceSheet(context, appState);
+                          },
+                          child: const Text('Add model photo'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () =>
+                              appState.dismissPartialNotice(),
                           child: const Text('Enter details manually'),
                         ),
                       ),
@@ -291,43 +389,8 @@ class _PhotoStrip extends StatelessWidget {
   final AppState appState;
   final Item item;
 
-  Future<void> _pickSource(BuildContext context) async {
-    final choice = await showModalBottomSheet<ImageSource>(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading:
-                    const Icon(Icons.photo_camera_rounded, size: 28),
-                title: const Text('Take a Photo',
-                    style: TextStyle(fontWeight: FontWeight.w600)),
-                onTap: () =>
-                    Navigator.of(sheetContext).pop(ImageSource.camera),
-              ),
-              ListTile(
-                leading:
-                    const Icon(Icons.photo_library_rounded, size: 28),
-                title: const Text('Choose from Gallery',
-                    style: TextStyle(fontWeight: FontWeight.w600)),
-                onTap: () =>
-                    Navigator.of(sheetContext).pop(ImageSource.gallery),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (choice != null && context.mounted) {
-      await appState.addPhoto(choice);
-    }
-  }
+  Future<void> _pickSource(BuildContext context) =>
+      _addPhotoFromSourceSheet(context, appState);
 
   @override
   Widget build(BuildContext context) {

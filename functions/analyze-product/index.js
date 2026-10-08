@@ -64,6 +64,30 @@ CRITICAL HONESTY RULES:
 - Base price estimates on typical second-hand marketplace values in North America. These are ESTIMATES, not appraisals.
 - If the photo is unclear, say so: set recognized=false or a low confidence, and use recommended_photos to ask for a better shot.
 
+APPLE / TESLA PROGRESSIVE IDENTIFICATION — the rules in this block apply ONLY
+when the confidently recognized brand is Apple or Tesla. They change nothing
+for any other brand.
+- Apple: if the product family is clearly MacBook Pro, MacBook Air, iPad,
+  iPad Pro, or iPad Air, but the exact year / chip / storage / Axxxx model
+  number cannot be determined confidently, still set "recognized": true with
+  "identification_level": "product_family", leave "model" empty, and set
+  "needs_more_information": true and "needs_more_photos": false. Continue the
+  analysis with the facts you do know. Write unknown specs as "Unknown" in
+  the description — NEVER invent a year, chip, storage size, or model number.
+- Tesla: if the model family is clearly Model 3, Model Y, Model S, or
+  Model X, but the year / trim / battery / drivetrain cannot be determined,
+  still set "recognized": true with "identification_level":
+  "product_family", leave "model" empty, and set "needs_more_information":
+  true and "needs_more_photos": false. Continue the analysis with the facts
+  you do know. NEVER invent a year, trim, battery size, or drivetrain.
+- NEVER set "recognized": false merely because the exact variant is unknown.
+- PRICING TIERS: "exact" identification -> your normal estimate.
+  "product_family" identification -> give a BROADER range in price_low /
+  price_high only when you can do so honestly from typical resale values;
+  leave suggested_price 0 when no single sensible value exists. When you
+  cannot form even a reasonable range, set all three prices to 0 — never
+  fabricate a number.
+
 CONDITION: give your best visual assessment (likeNew, excellent, good, fair, poor). The seller confirms it before listing — a photo cannot prove functionality or hidden defects.
 
 Respond with ONLY a single JSON object (no markdown fences, no commentary) with exactly these fields:
@@ -87,10 +111,13 @@ Respond with ONLY a single JSON object (no markdown fences, no commentary) with 
   "price_high": 0,
   "suggested_price": 0,
   "confidence": 0,
+  "identification_level": "one of: exact, product_family",
+  "needs_more_information": false,
   "needs_more_photos": false,
   "recommended_photos": []
 }
-"confidence" is 0-100. Below 60 set needs_more_photos=true and list the exact shots that would help, e.g. "Take a photo of the model-number label.", "Take a photo of the front of the product.", "Take a photo of the bottom sticker.", "Take a photo of the packaging."`;
+"confidence" is 0-100. Below 60 set needs_more_photos=true and list the exact shots that would help, e.g. "Take a photo of the model-number label.", "Take a photo of the front of the product.", "Take a photo of the bottom sticker.", "Take a photo of the packaging."
+"identification_level" is "exact" when the precise model/variant is identified, or "product_family" when only the brand + product family is known (Apple/Tesla rules above). Set "needs_more_information": true when a photo of the model number / About This Mac screen / VIN would sharpen the result without blocking the listing.`;
 
 // ---------------------------------------------------------------------------
 // Multi-photo addendum — appended to SYSTEM_PROMPT ONLY when the request
