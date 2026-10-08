@@ -134,6 +134,43 @@ MULTI-PHOTO MODE: you were given {N} photos. They are supposed to show the SAME 
 - All honesty rules above still apply to every photo.`;
 
 // ---------------------------------------------------------------------------
+// REAL ESTATE MODE — UNDEPLOYED / PLACEHOLDER (Workstream B).
+//
+// This prompt + the `mode: 'real_estate'` request branch below exist ONLY in
+// the repo. The deployed Cloud Function does NOT include them, and the app
+// does NOT send `mode` yet — so live behavior is unchanged. After a future
+// redeploy WITH this code, the app can send { mode: 'real_estate' } to get
+// structured property-condition observations instead of a product listing.
+//
+// Honesty rules baked into the prompt: visual observations only — the model
+// must NEVER invent a price, an address, comparable sales, assessment
+// values, permit records, or renovation years.
+// ---------------------------------------------------------------------------
+const REAL_ESTATE_PROMPT = `You are a property-condition analyst for a home-valuation feature.
+
+Analyze the supplied property photo(s) carefully. Describe ONLY what is visually observable.
+
+CRITICAL HONESTY RULES:
+- NEVER invent, estimate, or guess a property value, price, or price range.
+- NEVER invent or guess an address, city, or location for the property.
+- NEVER state that a renovation happened in a specific year. Say "appears recently updated", "appears renovated", or "appears newer than the original construction" — visual observations only, never dated claims.
+- NEVER invent comparable sales, assessment values, or permit records.
+- Only describe what you can actually see: exterior/interior condition, roofing appearance, windows, siding, landscaping, garage, driveway, kitchen/bathroom condition, flooring, fixtures, apparent additions, deck/patio.
+- If the photo does not clearly show a residential property, set is_residential_property=false and explain briefly in the observations.
+
+Respond with ONLY a single JSON object (no markdown fences, no commentary) with exactly these fields:
+{
+  "is_residential_property": true,
+  "property_type": "one of: detached_house, townhouse, duplex, condo, apartment, acreage, residential_lot, multi_family, unknown",
+  "condition_observations": [
+    {"area": "Kitchen", "observation": "Kitchen appears recently updated."}
+  ],
+  "overall_condition": "one of: likeNew, excellent, good, fair, poor",
+  "confidence": 0
+}
+"confidence" is 0-100: how confident you are that this is a residential property and the observations are accurate.`;
+
+// ---------------------------------------------------------------------------
 // Gemini call with retry — transient failures only.
 //
 // 5xx / network failures: quick retries (a few seconds apart) are enough.
@@ -358,7 +395,9 @@ functions.http('analyzeProduct', async (req, res) => {
     if (rawLen > MAX_BODY_BYTES) {
       return res.status(413).json({ error: { category: 'BAD_IMAGE', message: 'Photo is too large. Try a smaller image.' } });
     }
-    const { imageBase64, images, mimeType } = req.body || {};
+    const { imageBase64, images, mimeType, mode } = req.body || {};
+    // NOTE: `mode: 'real_estate'` is the UNDEPLOYED Workstream B branch (see
+    // REAL_ESTATE_PROMPT above). The app does not send it yet.
     // Multi-photo requests carry { images: [<base64>, ...] }. When that
     // field is absent, the original single-image path below runs with its
     // exact original validation and behavior.
@@ -413,9 +452,12 @@ functions.http('analyzeProduct', async (req, res) => {
     }
 
     // Single photo: SYSTEM_PROMPT alone, exactly as before.
-    const promptText = multiMode
-      ? SYSTEM_PROMPT + MULTI_PHOTO_ADDENDUM.replace('{N}', String(jpegs.length))
-      : SYSTEM_PROMPT;
+    // Real-estate mode (UNDEPLOYED): uses the property-condition prompt.
+    const promptText = mode === 'real_estate'
+      ? REAL_ESTATE_PROMPT
+      : multiMode
+        ? SYSTEM_PROMPT + MULTI_PHOTO_ADDENDUM.replace('{N}', String(jpegs.length))
+        : SYSTEM_PROMPT;
     const jpegBase64List = jpegs.map((j) => j.toString('base64'));
 
     const models = [PRIMARY_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PRIMARY_MODEL)];
