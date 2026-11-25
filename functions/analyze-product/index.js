@@ -56,6 +56,26 @@ Analyze the supplied product photo carefully. Use all visible evidence including
 
 Identify the product as specifically as the evidence allows.
 
+PRIMARY SUBJECT: identify the DOMINANT subject of the photo — the item the
+photo is actually about, which fills the frame or is clearly the focus. NEVER
+identify or price a minor foreground or background object (something sitting
+in front of, behind, or beside the real subject) instead of the dominant
+subject.
+
+PROPERTY ROUTING: if the dominant subject is a house, building, or other
+residential property, this is NOT a product listing. Set "recognized": true,
+"category": "Real Estate", and "product_name" describing the property (e.g.
+"Brick Single-Family House"). Describe only the visible exterior features
+(construction material, storeys, roof, windows, lot, landscaping) in
+short_description, and state in short_description that a valuation cannot be
+produced from exterior photos alone. Set price_low, price_high, and
+suggested_price all to 0 — NEVER price the property, and NEVER price a
+foreground object in the scene (a garden item, a plant cage, a vehicle in the
+driveway) when the dominant subject is the property. Set
+"needs_more_photos": true and use recommended_photos to request the
+property-flow inputs: the property address, interior photos, square footage,
+lot size, and year built.
+
 CRITICAL HONESTY RULES:
 - Only name a brand if it is clearly visible or legible in the photo. Never guess a brand.
 - If a logo or mark is visible but its text is NOT legible, describe the mark in short_description instead of naming a brand.
@@ -90,6 +110,67 @@ for any other brand.
 
 CONDITION: give your best visual assessment (likeNew, excellent, good, fair, poor). The seller confirms it before listing — a photo cannot prove functionality or hidden defects.
 
+VISIBLE EVIDENCE ONLY: descriptions may state ONLY what is actually visible
+in the photo. NEVER assert function or hidden state as fact — do not write
+"functional sunroof", "working condition", "runs well", or "air suspension"
+unless that function is visibly demonstrated in the photo. Features you can
+only infer get hedged phrasing: "appears to have", "shown with", "visibly
+equipped with". For vehicles and appliances photographed only from the
+outside, frame condition strictly as EXTERIOR COSMETIC condition (e.g.
+"exterior appears clean and straight; mechanical condition not assessed") —
+never imply the item works.
+
+CONFIDENCE CALIBRATION: for vehicles and spec-dependent electronics (laptops,
+phones, cameras, appliances), the things that drive value are often NOT
+visible: mileage / odometer reading, interior condition, VIN, a powered-on
+About / settings screen, a bottom-case or serial model number, a box spec
+label. When those value drivers are not visible in the photo(s):
+- cap "confidence" at 80,
+- set "needs_more_photos": true,
+- list the SPECIFIC resolving photos in recommended_photos (e.g. "Take a
+  photo of the odometer.", "Take a photo of the About This Mac screen.",
+  "Take a photo of the model-number sticker on the bottom case.").
+Never claim packaging shown in a photo is the item's ORIGINAL box unless a
+label on the box visibly matches the unit.
+
+RETAIL DISPLAY: if the photo shows a retail display context — printed product
+placards or signage, anti-theft tethers or cables, display stands, store
+shelving or lighting — say so in short_description (e.g. "Photographed on a
+retail display — confirm whether this is the actual unit for sale."). In a
+retail display context: cap "condition" at "good", cap "confidence" at 85,
+and set "needs_more_photos": true. READ any legible placard or sign text and
+USE it in the identification — including sub-variant or edition names printed
+on the placard (e.g. a "Supreme Edition" style variant name) — and translate
+non-English placard text when it is legible.
+
+DEBADGED VEHICLE IDENTIFICATION: when a vehicle's badges or emblems are
+absent or appear removed, you may still identify the brand and product family
+from distinctive design language — silhouette and proportions, headlight and
+taillight shapes, door-handle design, charge-port or fuel-door placement,
+wheel design. When you identify a vehicle this way (by design, not by a
+legible badge): set "identification_level": "product_family", leave "model"
+empty, set "needs_more_information": true, and state in short_description
+that the vehicle was identified by its design because badging is absent or
+removed. NEVER fall back to a generic label like "Custom Modified Sedan"
+when the design language identifies a known brand and family.
+
+REGIONAL AND COMPATIBILITY CUES: when visible, note buyer-relevant
+compatibility facts in short_description or search_keywords:
+- plug type and voltage region (e.g. "European Schuko plug — 220-240V region")
+- right-hand-drive vs left-hand-drive for vehicles
+- keyboard layout language (e.g. "German QWERTZ keyboard layout")
+- non-English labels or signage that affect who the item suits
+Only note a cue you can actually see; never guess a region.
+
+REJECTION HYGIENE: when "recognized" is false, the listing fields stay
+EMPTY so no half-formed listing leaks through: set "suggested_title": "",
+"product_name": "", "short_description": "", and price_low / price_high /
+suggested_price all to 0. Carry the explanation in the two dedicated fields
+instead: "rejection_reason" (one of: "non_product_image", "blurry_image",
+"different_items", "unclear_image") and "user_message" (one or two plain
+sentences telling the user what went wrong and what photo to try instead).
+When "recognized" is true, set "rejection_reason": "" and "user_message": "".
+
 Respond with ONLY a single JSON object (no markdown fences, no commentary) with exactly these fields:
 {
   "recognized": true,
@@ -97,7 +178,7 @@ Respond with ONLY a single JSON object (no markdown fences, no commentary) with 
   "product_name": "",
   "model": "",
   "product_family": "",
-  "category": "one of: Furniture, Electronics, Appliances, Fashion, Beauty & Personal Care, Toys & Games, Books & Media, Sports & Outdoors, Baby & Kids, Home & Garden, Miscellaneous",
+  "category": "one of: Furniture, Electronics, Appliances, Fashion, Beauty & Personal Care, Toys & Games, Books & Media, Sports & Outdoors, Baby & Kids, Home & Garden, Real Estate, Miscellaneous",
   "subcategory": "",
   "color": "",
   "condition": "one of: likeNew, excellent, good, fair, poor",
@@ -114,7 +195,10 @@ Respond with ONLY a single JSON object (no markdown fences, no commentary) with 
   "identification_level": "one of: exact, product_family",
   "needs_more_information": false,
   "needs_more_photos": false,
-  "recommended_photos": []
+  "recommended_photos": [],
+  "rejection_reason": "one of: '', non_product_image, blurry_image, different_items, unclear_image — only when recognized is false",
+  "user_message": "short user-facing explanation when recognized is false, else ''",
+  "photo_mismatch_warning": "'' normally; in multi-photo mode, a concrete description of the conflict when the photos appear to show different items"
 }
 "confidence" is 0-100. Below 60 set needs_more_photos=true and list the exact shots that would help, e.g. "Take a photo of the model-number label.", "Take a photo of the front of the product.", "Take a photo of the bottom sticker.", "Take a photo of the packaging."
 "identification_level" is "exact" when the precise model/variant is identified, or "product_family" when only the brand + product family is known (Apple/Tesla rules above). Set "needs_more_information": true when a photo of the model number / About This Mac screen / VIN would sharpen the result without blocking the listing.`;
@@ -130,7 +214,7 @@ MULTI-PHOTO MODE: you were given {N} photos. They are supposed to show the SAME 
 - Identify the item using the clearest photo(s). Cross-check details across ALL photos: brand marks, model numbers, labels, colors, materials, accessories.
 - If a model number, label, or brand mark is legible in ANY photo, use it. You still must NEVER invent a model number that is not visible.
 - Assess condition from every photo, including close-up/detail shots. Report damage visible in any photo in visible_damage.
-- If the photos clearly show DIFFERENT items (not just different angles of one item), set recognized=false and a low confidence, and explain in recommended_photos that the photos seem to show different items and should be retaken of the same item.
+- DIFFERENT ITEMS — SOFT FAIL, NEVER A HARD REJECTION: if the photos clearly show DIFFERENT items (not just different angles of one item), do NOT set recognized=false. Instead: identify the PRIMARY item — the item in the first / clearest photo — and complete its listing normally, with a provisional price based on that item alone. Set "photo_mismatch_warning" to a concrete description of the conflict: what the primary photo appears to show and what the other photo(s) appear to show instead (e.g. "Photo 1 shows a silver MacBook; photo 2 shows a different keyboard layout and colour and appears to be a different unit."). Set "needs_more_photos": true and use recommended_photos to ask for consistent photos of ONE unit so the seller can confirm which item is actually for sale. When all photos show the same item, set "photo_mismatch_warning": "".
 - All honesty rules above still apply to every photo.`;
 
 // ---------------------------------------------------------------------------
@@ -484,6 +568,28 @@ functions.http('analyzeProduct', async (req, res) => {
     }
     const confidence = Number(p.confidence);
     p.confidence = Number.isFinite(confidence) ? Math.max(0, Math.min(100, Math.round(confidence))) : 0;
+
+    // Rejection hygiene — enforced server-side, not just asked of the model:
+    // when recognized=false, no half-formed listing may leak through,
+    // whatever the model put in the listing fields. The explanation lives in
+    // rejection_reason / user_message instead. Product prompt path only —
+    // real-estate mode returns a different shape and is left untouched.
+    if (mode !== 'real_estate') {
+      if (typeof p.photo_mismatch_warning !== 'string') p.photo_mismatch_warning = '';
+      if (!p.recognized) {
+        p.suggested_title = '';
+        p.product_name = '';
+        p.short_description = '';
+        p.price_low = 0;
+        p.price_high = 0;
+        p.suggested_price = 0;
+        const REJECTION_REASONS = ['non_product_image', 'blurry_image', 'different_items', 'unclear_image'];
+        if (!REJECTION_REASONS.includes(p.rejection_reason)) p.rejection_reason = 'unclear_image';
+        if (typeof p.user_message !== 'string' || !p.user_message.trim()) {
+          p.user_message = 'We could not identify a product in that photo. Try a clear, well-lit photo of the item on its own.';
+        }
+      }
+    }
 
     console.log(JSON.stringify({
       evt: 'analysis_ok', model: result.model, attempts: result.attempts,
