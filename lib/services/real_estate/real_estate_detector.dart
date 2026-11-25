@@ -7,13 +7,18 @@ library;
 /// the new property-valuation flow; otherwise the caller passes the result
 /// through untouched.
 ///
-/// HOW DETECTION WORKS TODAY: the deployed backend prompt has no Real
-/// Estate category yet (its categories are Furniture, Electronics, ...,
-/// Miscellaneous), so this detector matches residential-property keywords
-/// in the identification's title/category/description/keywords. This is an
-/// app-side heuristic — the long-term fix is the backend's dedicated
-/// real-estate classification prompt (see functions/analyze-product,
-/// REAL_ESTATE_PROMPT — UNDEPLOYED, placeholder).
+/// HOW DETECTION WORKS TODAY: this detector matches residential-property
+/// keywords in the identification's title/category/description. That
+/// covers backends whose prompt has no Real Estate category yet (their
+/// categories are Furniture, Electronics, ..., Miscellaneous).
+///
+/// Perfection-loop bridge: the updated backend DOES return an explicit
+/// category of "Real Estate" for a house photo. When it does, detection
+/// succeeds even if the title/description happen to contain no property
+/// keyword — the type is [PropertyType.unknown] ("Residential property")
+/// unless a keyword names a more specific type. Without this, a
+/// backend-categorized property result would reach the review screen with
+/// no property report behind it and the property flow would dead-end.
 ///
 /// HONESTY: detection only ever says "this photo looks like a residential
 /// property of type X". It NEVER infers an address, a value, or a year.
@@ -91,7 +96,8 @@ class RealEstateDetector {
   ];
 
   /// Runs detection over the user-visible analysis result. Pure function —
-  /// no network, no guessing beyond the keyword match.
+  /// no network, no guessing beyond the keyword match and the backend's
+  /// explicit category.
   static PropertyType? detectFromResult(AiAnalysisResult result) {
     final haystack =
         '${result.title} ${result.category} ${result.description}'
@@ -104,6 +110,12 @@ class RealEstateDetector {
         );
         if (regex.hasMatch(haystack)) return entry.key;
       }
+    }
+    // Perfection-loop bridge: the backend's explicit Real Estate category
+    // is authoritative even when no keyword matched — the property type
+    // simply stays unknown rather than guessed.
+    if (result.category.trim().toLowerCase() == 'real estate') {
+      return PropertyType.unknown;
     }
     return null;
   }
