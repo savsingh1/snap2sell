@@ -326,7 +326,27 @@ class Snap2SellBackendService implements AiService {
   /// every other product behaves exactly as before. The soft follow-up
   /// notice is attached to the result in
   /// [AiAnalysisResult.fromIdentification].
+  ///
+  /// Perfection-loop contract (additive — everything above is unchanged):
+  /// - Multi-photo mismatch no longer fails: the backend returns the
+  ///   primary item's listing with a photo_mismatch_warning (and
+  ///   needs_more_photos). The warning is surfaced as a dismissible banner
+  ///   on the review screen — never block the listing here.
+  /// - A Real Estate result must reach the review screen, which routes it
+  ///   to the property flow — even when the backend asks for more photos
+  ///   (interior shots / address details are the property flow's job).
+  /// - When the backend rejects the photo (recognized=false) it supplies
+  ///   a user_message written for the user; show THAT instead of the
+  ///   generic guidance below. The generic guidance remains the fallback
+  ///   for responses without a user_message (older backends).
   void _throwIfLowConfidence(ProductIdentification id) {
+    if (id.recognized && id.photoMismatchWarning.isNotEmpty) {
+      return; // mismatch warning — listing continues, banner explains.
+    }
+    if (id.recognized &&
+        id.category.trim().toLowerCase() == 'real estate') {
+      return; // property result — the review screen routes it.
+    }
     final weak = !id.recognized ||
         id.needsMorePhotos ||
         id.confidence < lowConfidenceThreshold;
@@ -334,6 +354,16 @@ class Snap2SellBackendService implements AiService {
     if (ProgressiveIdentification.isFamilyMatch(id,
         minConfidence: lowConfidenceThreshold)) {
       return; // confident family identification — continue, don't block.
+    }
+    if (!id.recognized && id.userMessage.isNotEmpty) {
+      // The backend's own explanation for this rejection (see
+      // ProductIdentification.userMessage / rejectionReason). It is
+      // already user-safe; the lowConfidence category's friendlyMessage
+      // passes it through verbatim.
+      throw AiServiceException(
+        id.userMessage,
+        category: AiErrorCategory.lowConfidence,
+      );
     }
     final tips = id.recommendedPhotos.where((s) => s.isNotEmpty).take(2).toList();
     final guidance = tips.isNotEmpty
