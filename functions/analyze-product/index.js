@@ -20,6 +20,8 @@
  *   GEMINI_MODEL    primary model (default gemini-3.8-flash)
  *   APP_API_SECRET  shared secret the app must send as x-app-secret
  *                   (empty = accept without the header; dev only)
+ *   IMAGE_MAX_EDGE  longest image edge (px) sent to Gemini (default 1600);
+ *                   a request may override it with "imageMaxEdge" (512-1600)
  */
 
 const functions = require('@google-cloud/functions-framework');
@@ -28,6 +30,7 @@ const sharp = require('sharp');
 const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'];
 const APP_SECRET = process.env.APP_API_SECRET || '';
+const IMAGE_MAX_EDGE_ENV = Number.parseInt(process.env.IMAGE_MAX_EDGE || '', 10);
 const MAX_BODY_BYTES = 12 * 1024 * 1024; // 12 MB: room for up to 5 photos
 const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024;
 const MAX_IMAGES = 5; // multi-photo cap per request
@@ -76,10 +79,14 @@ driveway) when the dominant subject is the property. Set
 property-flow inputs: the property address, interior photos, square footage,
 lot size, and year built.
 
+VEHICLE CATEGORY: cars, trucks, and motorcycles use "category":
+"Automotive" — never "Miscellaneous".
+
 CRITICAL HONESTY RULES:
 - Only name a brand if it is clearly visible or legible in the photo. Never guess a brand.
 - If a logo or mark is visible but its text is NOT legible, describe the mark in short_description instead of naming a brand.
 - Never invent an exact model number. If the model is not visible or cannot be determined confidently, leave "model" empty and identify the most likely product family instead.
+- Never name a product series, line, or trim (e.g. "Eco Series") unless that exact series text is legibly visible in the photo. A legible brand alone NEVER establishes a series — if the series text is not visible, leave the series out of "product_name", "product_family", and "suggested_title" entirely.
 - Only state materials if clearly visible. Never guess.
 - Base price estimates on typical second-hand marketplace values in North America. These are ESTIMATES, not appraisals.
 - If the photo is unclear, say so: set recognized=false or a low confidence, and use recommended_photos to ask for a better shot.
@@ -108,6 +115,24 @@ for any other brand.
   cannot form even a reasonable range, set all three prices to 0 — never
   fabricate a number.
 
+AMBIGUOUS SUB-FAMILY — IDENTIFY AT THE PARENT FAMILY (applies to EVERY
+brand — laptops, phones, cameras, game consoles, appliances, vehicles):
+when two or more sub-families of one product line are both plausible from
+the photo and the visible evidence cannot distinguish between them (e.g. a
+single angled photo of a laptop that could be a MacBook Air or a MacBook
+Pro), do NOT pick one sub-family. Identify at the PARENT family instead:
+- "product_family": the parent line (e.g. "MacBook")
+- "product_name": brand + parent line (e.g. "Apple MacBook")
+- "model": ""
+- "identification_level": "product_family"
+- "confidence": 70 or lower
+- "needs_more_photos": true and "needs_more_information": true, with the
+  resolving photos listed in recommended_photos
+- "suggested_title" must NOT contain either sub-family name — use the
+  parent line only.
+This rule overrides any sub-family guidance elsewhere in this prompt
+whenever the sub-family is not CLEARLY established by visible evidence.
+
 CONDITION: give your best visual assessment (likeNew, excellent, good, fair, poor). The seller confirms it before listing — a photo cannot prove functionality or hidden defects.
 
 VISIBLE EVIDENCE ONLY: descriptions may state ONLY what is actually visible
@@ -130,6 +155,8 @@ label. When those value drivers are not visible in the photo(s):
 - list the SPECIFIC resolving photos in recommended_photos (e.g. "Take a
   photo of the odometer.", "Take a photo of the About This Mac screen.",
   "Take a photo of the model-number sticker on the bottom case.").
+LOW-RESOLUTION CAP: when the photo is small, cropped, or low-detail AND no
+brand is legible in it, cap "confidence" at 60.
 Never claim packaging shown in a photo is the item's ORIGINAL box unless a
 label on the box visibly matches the unit.
 
@@ -156,7 +183,12 @@ when the design language identifies a known brand and family.
 
 REGIONAL AND COMPATIBILITY CUES: when visible, note buyer-relevant
 compatibility facts in short_description or search_keywords:
-- plug type and voltage region (e.g. "European Schuko plug — 220-240V region")
+- plug type and voltage region: when a plug or switch style is visible
+  (e.g. European Schuko, UK, or Indian plugs/switches) or other 220-240V
+  region cues appear, short_description MUST plainly state the caveat for
+  a North American buyer (e.g. "Fitted with a European Schuko plug
+  (220-240V) — a North American buyer will need an adapter and must check
+  voltage compatibility.")
 - right-hand-drive vs left-hand-drive for vehicles
 - keyboard layout language (e.g. "German QWERTZ keyboard layout")
 - non-English labels or signage that affect who the item suits
@@ -178,7 +210,7 @@ Respond with ONLY a single JSON object (no markdown fences, no commentary) with 
   "product_name": "",
   "model": "",
   "product_family": "",
-  "category": "one of: Furniture, Electronics, Appliances, Fashion, Beauty & Personal Care, Toys & Games, Books & Media, Sports & Outdoors, Baby & Kids, Home & Garden, Real Estate, Miscellaneous",
+  "category": "one of: Furniture, Electronics, Appliances, Fashion, Beauty & Personal Care, Toys & Games, Books & Media, Sports & Outdoors, Baby & Kids, Home & Garden, Real Estate, Automotive, Miscellaneous",
   "subcategory": "",
   "color": "",
   "condition": "one of: likeNew, excellent, good, fair, poor",
@@ -479,7 +511,14 @@ functions.http('analyzeProduct', async (req, res) => {
     if (rawLen > MAX_BODY_BYTES) {
       return res.status(413).json({ error: { category: 'BAD_IMAGE', message: 'Photo is too large. Try a smaller image.' } });
     }
-    const { imageBase64, images, mimeType, mode } = req.body || {};
+    const { imageBase64, images, mimeType, mode, imageMaxEdge } = req.body || {};
+    // Latency knob: longest image edge sent to Gemini. The IMAGE_MAX_EDGE
+    // env var sets the default (1600); a request may override it with
+    // "imageMaxEdge". Always clamped to 512-1600.
+    const rawEdge = imageMaxEdge != null ? Number(imageMaxEdge)
+      : Number.isFinite(IMAGE_MAX_EDGE_ENV) ? IMAGE_MAX_EDGE_ENV : 1600;
+    const imageMaxEdgePx = Math.max(512, Math.min(1600,
+      Math.round(Number.isFinite(rawEdge) ? rawEdge : 1600)));
     // NOTE: `mode: 'real_estate'` is the UNDEPLOYED Workstream B branch (see
     // REAL_ESTATE_PROMPT above). The app does not send it yet.
     // Multi-photo requests carry { images: [<base64>, ...] }. When that
@@ -511,8 +550,8 @@ functions.http('analyzeProduct', async (req, res) => {
       imageInputs = [imageBase64];
     }
 
-    // Normalize: EXIF orientation fixed, longest side <=1600, JPEG q80.
-    // Handles JPEG/PNG/WEBP/HEIC input — Gemini always gets clean JPEG.
+    // Normalize: EXIF orientation fixed, longest side <= imageMaxEdgePx,
+    // JPEG q80. Handles JPEG/PNG/WEBP/HEIC input — Gemini gets clean JPEG.
     const jpegs = [];
     try {
       for (let i = 0; i < imageInputs.length; i++) {
@@ -520,7 +559,7 @@ functions.http('analyzeProduct', async (req, res) => {
         const meta = await sharp(input).metadata();
         const jpeg = await sharp(input)
           .rotate() // honor EXIF orientation
-          .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+          .resize({ width: imageMaxEdgePx, height: imageMaxEdgePx, fit: 'inside', withoutEnlargement: true })
           .jpeg({ quality: 80, mozjpeg: true })
           .toBuffer();
         jpegs.push(jpeg);
@@ -528,7 +567,7 @@ functions.http('analyzeProduct', async (req, res) => {
           evt: 'image_normalized',
           ...(multiMode ? { index: i, count: imageInputs.length } : {}),
           inFormat: meta.format, inW: meta.width, inH: meta.height,
-          outBytes: jpeg.length, inMime: mimeType || 'unknown',
+          outBytes: jpeg.length, inMime: mimeType || 'unknown', maxEdge: imageMaxEdgePx,
         }));
       }
     } catch {
@@ -587,6 +626,28 @@ functions.http('analyzeProduct', async (req, res) => {
         if (!REJECTION_REASONS.includes(p.rejection_reason)) p.rejection_reason = 'unclear_image';
         if (typeof p.user_message !== 'string' || !p.user_message.trim()) {
           p.user_message = 'We could not identify a product in that photo. Try a clear, well-lit photo of the item on its own.';
+        }
+        // A rejection carries no identification at all.
+        p.identification_level = '';
+      } else {
+        // Consistency rules the model sometimes misses, enforced the same
+        // way: if it asked for more photos, more photos are needed.
+        if (Array.isArray(p.recommended_photos) && p.recommended_photos.length > 0) {
+          p.needs_more_photos = true;
+        }
+        // "exact" requires a brand or a model on record; with neither, the
+        // identification is at product-family level at best.
+        if (!p.brand && !p.model && p.identification_level === 'exact') {
+          p.identification_level = 'product_family';
+        }
+        // A property is identified to type level, never as an exact unit.
+        if (p.category === 'Real Estate') {
+          p.identification_level = 'product_family';
+        }
+        // A vehicle always has value drivers a photo cannot show (mileage,
+        // title status, mechanical state) — more information is needed.
+        if (p.category === 'Automotive') {
+          p.needs_more_information = true;
         }
       }
     }
