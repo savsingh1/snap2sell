@@ -14,3 +14,6 @@ Thumbs.db
 # Secrets — never commit real keys
 .env
 *.env
+
+# Play upload key (CI decodes it; never commit)
+android/app/upload-key.p12
