@@ -24,6 +24,7 @@ const List<String> kCategories = [
   'Baby & Kids',
   'Home & Garden',
   'Real Estate',
+  'Automotive',
   'Miscellaneous',
 ];
 
