@@ -7,6 +7,7 @@ import '../models/item.dart';
 import '../providers/app_state.dart';
 import '../services/listing_service.dart';
 import 'confirmation_screen.dart';
+import 'sell_hub_screen.dart';
 
 /// Step 5: choose marketplaces, then "post" via the system share sheet.
 ///
@@ -105,6 +106,14 @@ class PlatformsScreen extends StatelessWidget {
                 ],
               ),
             ),
+          ),
+          const SizedBox(height: 16),
+          OutlinedButton.icon(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SellHubScreen()),
+            ),
+            icon: const Icon(Icons.storefront_rounded),
+            label: const Text('Sell it — all marketplaces in one place'),
           ),
           const SizedBox(height: 20),
           const Text(
