@@ -13,6 +13,7 @@ class AiAnalysisResult {
     this.identificationLevel = 'exact',
     this.pricingTier = 1,
     this.partialNotice,
+    this.photoMismatchWarning = '',
   });
 
   final String title;
@@ -35,6 +36,14 @@ class AiAnalysisResult {
   /// block. Null for ordinary exact identifications.
   final String? partialNotice;
 
+  /// Perfection-loop contract: when a multi-photo set contained a photo
+  /// that does not match the primary item, the backend returns the primary
+  /// item's listing PLUS this warning (and needs_more_photos). The listing
+  /// IS created — the review screen shows the warning as a dismissible
+  /// banner and never blocks. Empty when every photo matched (or for
+  /// responses from before the field existed).
+  final String photoMismatchWarning;
+
   factory AiAnalysisResult.fromJson(Map<String, dynamic> json) {
     return AiAnalysisResult(
       title: json['title'] as String? ?? 'Untitled item',
@@ -49,6 +58,8 @@ class AiAnalysisResult {
           json['identificationLevel'] as String? ?? 'exact',
       pricingTier: (json['pricingTier'] as num?)?.toInt() ?? 1,
       partialNotice: json['partialNotice'] as String?,
+      photoMismatchWarning:
+          json['photoMismatchWarning'] as String? ?? '',
     );
   }
 
@@ -93,6 +104,7 @@ class AiAnalysisResult {
       identificationLevel: level,
       pricingTier: pricingTier,
       partialNotice: ProgressiveIdentification.noticeFor(id),
+      photoMismatchWarning: id.photoMismatchWarning,
     );
   }
 
@@ -110,6 +122,7 @@ class AiAnalysisResult {
         'identificationLevel': identificationLevel,
         'pricingTier': pricingTier,
         'partialNotice': partialNotice,
+        'photoMismatchWarning': photoMismatchWarning,
       };
 }
 
@@ -237,6 +250,9 @@ class ProductIdentification {
     required this.recommendedPhotos,
     this.identificationLevel = '',
     this.needsMoreInformation = false,
+    this.rejectionReason = '',
+    this.userMessage = '',
+    this.photoMismatchWarning = '',
   });
 
   final bool recognized;
@@ -268,6 +284,27 @@ class ProductIdentification {
   /// True when a model-number / About This Mac / VIN photo would sharpen
   /// the result. Informational only — never blocks the listing.
   final bool needsMoreInformation;
+
+  /// Perfection-loop contract fields. All default to '' so responses from
+  /// before these fields existed parse exactly as before.
+
+  /// Why the backend rejected the photo(s), when [recognized] is false:
+  /// one of 'non_product_image', 'blurry_image', 'different_items',
+  /// 'unclear_image'. Empty when recognized, or when the backend did not
+  /// supply a reason.
+  final String rejectionReason;
+
+  /// User-facing explanation supplied by the backend when [recognized] is
+  /// false. When non-empty it is shown to the user INSTEAD of the app's
+  /// generic clearer-photo guidance. Empty when recognized.
+  final String userMessage;
+
+  /// When a multi-photo set contained a photo that does not match the
+  /// primary item, the backend still returns the primary item's listing
+  /// and puts the conflict description here (with needsMorePhotos set).
+  /// The listing continues — this is a warning, never a block. Empty when
+  /// every photo matched.
+  final String photoMismatchWarning;
 
   static List<String> _stringList(dynamic v) => (v as List<dynamic>?)
           ?.map((e) => e.toString())
@@ -305,6 +342,9 @@ class ProductIdentification {
       identificationLevel: _str(json['identification_level']),
       needsMoreInformation:
           json['needs_more_information'] as bool? ?? false,
+      rejectionReason: _str(json['rejection_reason']),
+      userMessage: _str(json['user_message']),
+      photoMismatchWarning: _str(json['photo_mismatch_warning']),
     );
   }
 }
