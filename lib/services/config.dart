@@ -28,4 +28,19 @@ class AppConfig {
   );
 
   static bool get hasAiBackend => aiBackendUrl.isNotEmpty;
+
+  /// Meta (Facebook) app id for Facebook Login, injected at build time:
+  ///   flutter run --dart-define=FACEBOOK_APP_ID=... \
+  ///               --dart-define=AI_BACKEND_URL=... (etc.)
+  ///
+  /// CONFIG REQUIRED: empty until the owner registers a Meta app for
+  /// Snap2Sell (exact steps in docs/facebook-app-setup.md). While empty,
+  /// every Facebook connection feature runs in an honest "not configured"
+  /// state — the app never pretends a Facebook account is connected.
+  static const String facebookAppId = String.fromEnvironment(
+    'FACEBOOK_APP_ID',
+    defaultValue: '',
+  );
+
+  static bool get hasFacebookAppId => facebookAppId.isNotEmpty;
 }
