@@ -29,11 +29,29 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("upload") {
+            val ksFile = file("upload-key.p12")
+            if (ksFile.exists()) {
+                storeFile = ksFile
+                storeType = "PKCS12"
+                storePassword = System.getenv("UPLOAD_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("UPLOAD_KEY_ALIAS")
+                keyPassword = System.getenv("UPLOAD_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Play uploads sign with the upload key when CI provides it
+            // (android/app/upload-key.p12 + UPLOAD_* env vars); local builds
+            // keep the debug key so `flutter run --release` still works.
+            signingConfig = if (file("upload-key.p12").exists()) {
+                signingConfigs.getByName("upload")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
