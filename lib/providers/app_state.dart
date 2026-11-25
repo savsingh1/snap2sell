@@ -87,6 +87,12 @@ class AppState extends ChangeNotifier {
   /// is guidance, not a block. Null for ordinary exact identifications.
   String? _partialNotice;
 
+  /// Perfection-loop: set when a multi-photo analysis found a photo that
+  /// does not match the primary item. The listing IS created from the
+  /// primary item — this is a dismissible warning banner on the review
+  /// screen, never a block. Null when every photo matched.
+  String? _photoMismatchWarning;
+
   /// Platforms the user ticked on the Price & Platforms screen.
   final Set<String> selectedPlatforms = {
     Marketplace.facebook.name,
@@ -102,6 +108,7 @@ class AppState extends ChangeNotifier {
   int get analysisStep => _analysisStep;
   String? get analysisError => _analysisError;
   String? get partialNotice => _partialNotice;
+  String? get photoMismatchWarning => _photoMismatchWarning;
   ListingService get listingService => _listing;
 
   /// Real-estate property report for the current analysis, when the photo
@@ -241,6 +248,7 @@ class AppState extends ChangeNotifier {
     _analysisStep = 0;
     _analysisError = null;
     _partialNotice = null;
+    _photoMismatchWarning = null;
     notifyListeners();
 
     try {
@@ -250,6 +258,9 @@ class AppState extends ChangeNotifier {
       final processed = _imageService.process(bytes);
       final result = await _runPipelineWithSteps(processed.bytes);
       _partialNotice = result.partialNotice;
+      _photoMismatchWarning = result.photoMismatchWarning.isNotEmpty
+          ? result.photoMismatchWarning
+          : null;
       _currentItem = _currentItem!.copyWith(
         title: result.title,
         category: result.category,
@@ -287,12 +298,16 @@ class AppState extends ChangeNotifier {
     _analysisStep = 0;
     _analysisError = null;
     _partialNotice = null;
+    _photoMismatchWarning = null;
     notifyListeners();
     try {
       // Compress the original photo again (same as the first attempt).
       final processed = _imageService.process(bytes);
       final result = await _runPipelineWithSteps(processed.bytes);
       _partialNotice = result.partialNotice;
+      _photoMismatchWarning = result.photoMismatchWarning.isNotEmpty
+          ? result.photoMismatchWarning
+          : null;
       _currentItem = _currentItem!.copyWith(
         title: result.title,
         category: result.category,
@@ -327,6 +342,13 @@ class AppState extends ChangeNotifier {
   /// model photo / Enter details manually). The created listing is kept.
   void dismissPartialNotice() {
     _partialNotice = null;
+    notifyListeners();
+  }
+
+  /// Dismisses the photo-mismatch warning banner. The created listing
+  /// (built from the primary item) is kept exactly as it is.
+  void dismissPhotoMismatchWarning() {
+    _photoMismatchWarning = null;
     notifyListeners();
   }
 
@@ -419,12 +441,16 @@ class AppState extends ChangeNotifier {
     _analysisStep = 0;
     _analysisError = null;
     _partialNotice = null;
+    _photoMismatchWarning = null;
     notifyListeners();
     try {
       final processed =
           photos.map((p) => _imageService.process(p).bytes).toList();
       final result = await _runMultiPipelineWithSteps(processed);
       _partialNotice = result.partialNotice;
+      _photoMismatchWarning = result.photoMismatchWarning.isNotEmpty
+          ? result.photoMismatchWarning
+          : null;
       _currentItem = _currentItem!.copyWith(
         title: result.title,
         category: result.category,
@@ -612,6 +638,7 @@ class AppState extends ChangeNotifier {
   /// Opens an existing library item for editing / re-posting.
   void openItem(Item item) {
     _partialNotice = null;
+    _photoMismatchWarning = null;
     // Saved items do not persist the session-scoped property report.
     final svc = _aiService;
     if (svc is RealEstateAiService) svc.clearReport();
@@ -638,6 +665,7 @@ class AppState extends ChangeNotifier {
     _extraPhotoBytes.clear();
     _extraPhotoPaths.clear();
     _partialNotice = null;
+    _photoMismatchWarning = null;
     final svc = _aiService;
     if (svc is RealEstateAiService) svc.clearReport();
     notifyListeners();
