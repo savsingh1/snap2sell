@@ -1,0 +1,42 @@
+name: Build Snap2Sell AAB (Play release)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.6'
+          channel: 'stable'
+
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+      - name: Decode upload keystore
+        run: echo "${{ secrets.UPLOAD_KEYSTORE_BASE64 }}" | base64 -d > android/app/upload-key.p12
+
+      - name: Build release AAB
+        env:
+          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+        run: flutter build appbundle --release --dart-define=AI_BACKEND_URL=${{ secrets.AI_BACKEND_URL }} --dart-define=APP_API_SECRET=${{ secrets.APP_API_SECRET }}
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: snap2sell-aab
+          path: build/app/outputs/bundle/release/*.aab
