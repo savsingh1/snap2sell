@@ -253,66 +253,60 @@ class _ResultsScreenState extends State<ResultsScreen> {
             ),
             const SizedBox(height: 12),
           ],
-          // Workstream B: real-estate property flow. The photo was detected
-          // as a residential property — offer the valuation report. This
-          // banner is additive; every other category renders exactly as
-          // before.
-          if (item.category == 'Real Estate' &&
-              appState.propertyReport != null &&
+          // Perfection-loop: one of the photos in the set did not match
+          // the primary item. The listing below was still built from the
+          // primary item — this banner only warns, using the backend's own
+          // words for the conflict. It never blocks and it dismisses.
+          if (appState.photoMismatchWarning != null &&
               appState.analysisError == null) ...[
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: const Color(0xFFE8F5E9),
+                color: const Color(0xFFFFF3E0),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFA5D6A7)),
+                border: Border.all(color: const Color(0xFFFFB74D)),
               ),
-              child: Column(
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    appState.propertyReport!.nextStepMessage,
-                    style: const TextStyle(
-                        fontSize: 13, color: Color(0xFF1B5E20)),
+                  const Icon(Icons.warning_amber_rounded,
+                      size: 20, color: Color(0xFFE65100)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      appState.photoMismatchWarning!,
+                      style: const TextStyle(
+                          fontSize: 13, color: Color(0xFFE65100)),
+                    ),
                   ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ElevatedButton(
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => const PropertyReportScreen(
-                                    openAddressForm: true),
-                              ),
-                            );
-                          },
-                          child: const Text('Add address'),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) =>
-                                    const PropertyReportScreen(),
-                              ),
-                            );
-                          },
-                          child: const Text('View property report'),
-                        ),
-                      ),
-                    ],
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded,
+                        size: 18, color: Color(0xFFE65100)),
+                    tooltip: 'Dismiss',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () =>
+                        appState.dismissPhotoMismatchWarning(),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 12),
           ],
+          // Perfection-loop routing: a Real Estate result is NOT a product
+          // listing, so the $0 product form below is never presented for
+          // it. The user gets the property explanation and the property
+          // flow's entry points instead (Workstream B panel, promoted from
+          // banner to the whole review body for this category).
+          if (item.category == 'Real Estate') ...[
+            _PhotoPreview(
+              path: item.photoPath,
+              bytes: appState.currentPhotoBytes,
+            ),
+            const SizedBox(height: 16),
+            _PropertyRoutingPanel(appState: appState),
+          ] else ...[
           _PhotoPreview(
             path: item.photoPath,
             bytes: appState.currentPhotoBytes,
@@ -424,6 +418,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
             onPressed: () => _continue(appState),
             child: const Text('Continue to Platforms'),
           ),
+          ],
         ],
       ),
     );
@@ -440,6 +435,120 @@ class _ResultsScreenState extends State<ResultsScreen> {
           ),
         ),
       );
+}
+
+/// Real-estate routing panel (perfection loop): shown INSTEAD of the
+/// product-listing form when the analysis result's category is
+/// 'Real Estate'. Explains that the photo looks like a property and that a
+/// valuation needs the address and property details, then hands off to the
+/// existing Workstream B property flow ([PropertyReportScreen]).
+///
+/// The report is session-scoped (see [AppState.propertyReport]): with the
+/// production pipeline the RealEstateAiService decorator has always built
+/// one by the time this screen shows, so both entry buttons render. If no
+/// report exists (e.g. a saved item reopened in a later session), the panel
+/// still explains and offers the property flow — the report screen then
+/// shows its own honest "no report" state rather than a fake valuation.
+class _PropertyRoutingPanel extends StatelessWidget {
+  const _PropertyRoutingPanel({required this.appState});
+
+  final AppState appState;
+
+  @override
+  Widget build(BuildContext context) {
+    final report = appState.propertyReport;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE8F5E9),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFA5D6A7)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.home_rounded, color: Color(0xFF1B5E20)),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'This looks like a property',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1B5E20),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            report?.nextStepMessage ??
+                'This photo looks like a residential property, so there '
+                    'is no product listing to create from it.',
+            style:
+                const TextStyle(fontSize: 13, color: Color(0xFF1B5E20)),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'A home valuation cannot be made from photos alone — it '
+            'needs the property address and details. Open the property '
+            'flow to add the address and view the valuation report.',
+            style: TextStyle(fontSize: 13, color: Color(0xFF1B5E20)),
+          ),
+          const SizedBox(height: 12),
+          if (report != null)
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const PropertyReportScreen(
+                              openAddressForm: true),
+                        ),
+                      );
+                    },
+                    child: const Text('Add address'),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => const PropertyReportScreen(),
+                        ),
+                      );
+                    },
+                    child: const Text('View property report'),
+                  ),
+                ),
+              ],
+            )
+          else
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => const PropertyReportScreen(),
+                    ),
+                  );
+                },
+                child: const Text('Open property valuation'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Multi-photo strip under the main preview: the user can add up to 5 photos
