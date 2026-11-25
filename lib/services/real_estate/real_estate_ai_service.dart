@@ -135,6 +135,9 @@ class RealEstateAiService implements AiService {
       // no range available, never invented.
       identificationLevel: 'property',
       pricingTier: 3,
+      // A photo-mismatch warning from a multi-photo property set survives
+      // the rewrite so the review screen can still show it.
+      photoMismatchWarning: result.photoMismatchWarning,
     );
   }
 }
