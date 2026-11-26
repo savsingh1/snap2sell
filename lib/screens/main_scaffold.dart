@@ -35,10 +35,27 @@ class _MainScaffoldState extends State<MainScaffold> {
           ProfileScreen(),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => showCaptureSheet(context),
-        tooltip: 'Snap an item',
-        child: const Icon(Icons.photo_camera_rounded, size: 30),
+      floatingActionButton: Container(
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF6A3DF0), SnapColors.primaryDeep],
+          ),
+          boxShadow: SnapShadows.raised,
+        ),
+        child: FloatingActionButton(
+          onPressed: () => showCaptureSheet(context),
+          tooltip: 'Snap an item',
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          hoverElevation: 0,
+          focusElevation: 0,
+          highlightElevation: 0,
+          shape: const CircleBorder(),
+          child: const Icon(Icons.photo_camera_rounded, size: 30),
+        ),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
       bottomNavigationBar: BottomAppBar(
