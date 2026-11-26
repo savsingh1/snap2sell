@@ -10,24 +10,13 @@ import '../screens/processing_screen.dart';
 Future<void> showCaptureSheet(BuildContext context) async {
   final choice = await showModalBottomSheet<ImageSource>(
     context: context,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-    ),
+    // Shape and drag handle come from the theme's bottomSheetTheme.
     builder: (sheetContext) => SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+        padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 16),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
             ListTile(
               leading: const Icon(Icons.photo_camera_rounded, size: 28),
               title: const Text('Take a Photo',
