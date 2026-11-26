@@ -13,9 +13,11 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_theme.dart';
 import '../providers/app_state.dart';
+import '../services/deep_links.dart';
 import '../services/real_estate/property_models.dart';
 
 class PropertyReportScreen extends StatefulWidget {
@@ -341,6 +343,59 @@ class _PropertyReportScreenState extends State<PropertyReportScreen> {
                 ],
               ),
             ),
+            // Valuation Phase 0 deep links: sources whose terms do not
+            // allow automated access (BC Assessment's free search is
+            // personal-use only; sold prices sit behind the user's own
+            // Zealty account) are offered as the user's own lookup.
+            if (report.addressConfirmed && record.address != null) ...[
+              const Divider(height: 1),
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Look it up yourself',
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'BC Assessment and sold-price records cannot be '
+                      'fetched automatically — open them with the address '
+                      'you confirmed and enter what you find.',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: SnapColors.textMuted,
+                          height: 1.4),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.open_in_new, size: 16),
+                          label: const Text('BC Assessment search'),
+                          onPressed: () => launchUrl(
+                            ValuationDeepLinks.bcAssessmentSearch(
+                                record.address!),
+                            mode: LaunchMode.externalApplication,
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.open_in_new, size: 16),
+                          label: const Text('Sold history on Zealty'),
+                          onPressed: () => launchUrl(
+                            ValuationDeepLinks.zealtySoldHistory(
+                                record.address!),
+                            mode: LaunchMode.externalApplication,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ],
       ),
