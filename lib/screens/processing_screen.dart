@@ -45,6 +45,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
     final progress = appState.isAnalyzing
         ? (step + 1) / kAnalysisSteps.length
         : 0.05;
+    final photoBytes = appState.currentPhotoBytes;
 
     return Scaffold(
       appBar: AppBar(title: const Text('AI Analysis')),
@@ -55,26 +56,52 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
           children: [
             const SizedBox(height: 12),
             Center(
-              child: SizedBox(
-                width: 120,
-                height: 120,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    SizedBox(
-                      width: 120,
-                      height: 120,
-                      child: CircularProgressIndicator(
-                        value: progress,
-                        strokeWidth: 10,
-                        backgroundColor: SnapColors.primaryLight,
-                        valueColor: const AlwaysStoppedAnimation<Color>(
-                          SnapColors.primary,
+              child: _PulseGlow(
+                child: SizedBox(
+                  width: 120,
+                  height: 120,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      // The ring eases between step values instead of
+                      // jumping a quarter-turn at a time.
+                      TweenAnimationBuilder<double>(
+                        tween: Tween<double>(begin: 0, end: progress),
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOutCubic,
+                        builder: (context, value, _) => SizedBox(
+                          width: 120,
+                          height: 120,
+                          child: CircularProgressIndicator(
+                            value: value,
+                            strokeWidth: 10,
+                            backgroundColor: SnapColors.primaryLight,
+                            valueColor:
+                                const AlwaysStoppedAnimation<Color>(
+                              SnapColors.primary,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                    const SnapLogo(size: 72),
-                  ],
+                      // The user's own photo sits inside the ring while
+                      // it is analysed, and flies into the Results
+                      // preview via the shared Hero tag.
+                      if (photoBytes != null)
+                        Hero(
+                          tag: 'snap-photo-hero',
+                          child: ClipOval(
+                            child: Image.memory(
+                              photoBytes,
+                              width: 88,
+                              height: 88,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        )
+                      else
+                        const SnapLogo(size: 72),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -126,6 +153,62 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
   }
 }
 
+/// A slow breathing halo behind the progress ring while analysis runs.
+class _PulseGlow extends StatefulWidget {
+  const _PulseGlow({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_PulseGlow> createState() => _PulseGlowState();
+}
+
+class _PulseGlowState extends State<_PulseGlow>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (context, child) {
+        final t = Curves.easeInOut.transform(_pulse.value);
+        return Stack(
+          alignment: Alignment.center,
+          clipBehavior: Clip.none,
+          children: [
+            // Positioned so the halo never affects layout size.
+            Positioned(
+              left: -9,
+              top: -9,
+              child: Container(
+                width: 138,
+                height: 138,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: SnapColors.primary
+                      .withValues(alpha: 0.05 + 0.06 * t),
+                ),
+              ),
+            ),
+            child!,
+          ],
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+
 enum _StepState { pending, active, done }
 
 class _StepRow extends StatelessWidget {
@@ -155,7 +238,7 @@ class _StepRow extends StatelessWidget {
       case _StepState.pending:
         iconColor = SnapColors.textMuted;
         trailing = const Icon(Icons.radio_button_unchecked_rounded,
-            color: Color(0xFFD8D4E8));
+            color: Color(0xFFDCD3F5));
         break;
     }
     return ListTile(
