@@ -705,6 +705,30 @@ functions.http('analyzeProduct', async (req, res) => {
           p.confidence = Math.min(p.confidence, 60);
           appliedGuards.push('low_res_confidence_cap');
         }
+        // Round 3.8 guard — description consistency, decoupled from
+        // guard 1: whenever the settled identification is the MacBook
+        // parent family with no model on record, no text field may name
+        // a sub-family, whether guard 1 fired or the model complied in
+        // the structured fields while its prose did not. (ChatGPT round
+        // 3 prescription: enforce the identification level in every
+        // generated field.)
+        if (!p.model && (p.product_family === 'MacBook' || p.product_name === 'Apple MacBook')) {
+          const scrubSubfamily = (s) => typeof s === 'string' ? s.replace(/MacBook (Air|Pro)/gi, 'MacBook') : s;
+          let scrubbed = false;
+          for (const key of ['suggested_title', 'short_description']) {
+            const before = p[key];
+            p[key] = scrubSubfamily(p[key]);
+            if (p[key] !== before) scrubbed = true;
+          }
+          for (const key of ['search_keywords', 'recommended_photos']) {
+            if (Array.isArray(p[key])) {
+              const next = p[key].map(scrubSubfamily);
+              if (JSON.stringify(next) !== JSON.stringify(p[key])) scrubbed = true;
+              p[key] = next;
+            }
+          }
+          if (scrubbed) appliedGuards.push('subfamily_text_scrub');
+        }
         // Round 3.7 guard 3 — a populated price range with a zero point
         // price is an internally broken listing field (Claude round 2
         // scored it critical). The model chose the range; the point price
