@@ -81,6 +81,7 @@ class PlatformsScreen extends StatelessWidget {
                           style: const TextStyle(
                             fontSize: 32,
                             fontWeight: FontWeight.w800,
+                            letterSpacing: -0.5,
                             color: SnapColors.primary,
                           ),
                         ),
