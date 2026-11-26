@@ -342,7 +342,7 @@ class GeminiError extends Error {
   }
 }
 
-async function callGemini(apiKey, model, jpegBase64List, promptText, startedAt) {
+async function callGemini(apiKey, model, jpegBase64List, promptText, startedAt, thinkingLevel) {
   const url =
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   // Single photo: parts are [{ text: SYSTEM_PROMPT }, { inline_data }] —
@@ -351,10 +351,18 @@ async function callGemini(apiKey, model, jpegBase64List, promptText, startedAt) 
   for (const b64 of jpegBase64List) {
     parts.push({ inline_data: { mime_type: 'image/jpeg', data: b64 } });
   }
-  const body = JSON.stringify({
-    contents: [{ parts }],
-    generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
-  });
+  // Round 5 A/B knob: an optional thinking level (Gemini 3 thinkingConfig).
+  // When unset the request is byte-identical to the original. If a model
+  // rejects the level with a 400, the level is stripped once and the call
+  // retries without it (see the 400 branch below), so a bad level can
+  // never take the endpoint down.
+  let activeThinking = thinkingLevel || null;
+  const buildBody = () => {
+    const generationConfig = { responseMimeType: 'application/json', temperature: 0.2 };
+    if (activeThinking) generationConfig.thinkingConfig = { thinkingLevel: activeThinking };
+    return JSON.stringify({ contents: [{ parts }], generationConfig });
+  };
+  let body = buildBody();
 
   let lastErr = null;
   let attempt = 0;            // Gemini attempts made (1-based after increment)
@@ -433,7 +441,7 @@ async function callGemini(apiKey, model, jpegBase64List, promptText, startedAt) 
       console.log(
         JSON.stringify({ evt: 'gemini_attempt', model, attempt, outcome: 'ok', ms: Date.now() - attemptStart, totalMs: Date.now() - startedAt }),
       );
-      return { parsed, model, attempts: attempt };
+      return { parsed, model, attempts: attempt, thinking: activeThinking };
     }
 
     if (res.status === 404) {
@@ -443,6 +451,15 @@ async function callGemini(apiKey, model, jpegBase64List, promptText, startedAt) 
     if (res.status === 400) {
       const snippet = (await res.text().catch(() => '')).slice(0, 200);
       console.log(JSON.stringify({ evt: 'gemini_400', model, snippet }));
+      if (activeThinking) {
+        // The model rejected the thinking level: strip it and retry this
+        // model once without it instead of failing the request.
+        console.log(JSON.stringify({ evt: 'thinking_config_stripped', model, thinkingLevel: activeThinking }));
+        activeThinking = null;
+        body = buildBody();
+        lastErr = null;
+        continue;
+      }
       throw new GeminiError('BAD_IMAGE', 'The photo could not be processed. Try a clearer photo.', 400);
     }
     if (res.status === 401 || res.status === 403) {
@@ -515,7 +532,7 @@ functions.http('analyzeProduct', async (req, res) => {
     if (rawLen > MAX_BODY_BYTES) {
       return res.status(413).json({ error: { category: 'BAD_IMAGE', message: 'Photo is too large. Try a smaller image.' } });
     }
-    const { imageBase64, images, mimeType, mode, imageMaxEdge, modelOverride } = req.body || {};
+    const { imageBase64, images, mimeType, mode, imageMaxEdge, modelOverride, thinkingLevel } = req.body || {};
     // Latency knob: longest image edge sent to Gemini. The IMAGE_MAX_EDGE
     // env var sets the default (1600); a request may override it with
     // "imageMaxEdge". Always clamped to 512-1600.
@@ -650,6 +667,11 @@ functions.http('analyzeProduct', async (req, res) => {
     const overrideModel = process.env.ALLOW_MODEL_OVERRIDE === '1' &&
       typeof modelOverride === 'string' && /^[a-zA-Z0-9.\-]{1,64}$/.test(modelOverride)
       ? modelOverride : null;
+    // Same gate for the thinking level: only the A/B harness may set it,
+    // and only to a known Gemini 3 level.
+    const overrideThinking = process.env.ALLOW_MODEL_OVERRIDE === '1' &&
+      ['minimal', 'low', 'medium', 'high'].includes(thinkingLevel)
+      ? thinkingLevel : null;
     const models = overrideModel
       ? [overrideModel, ...[PRIMARY_MODEL, ...FALLBACK_MODELS].filter((m) => m !== overrideModel)]
       : [PRIMARY_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PRIMARY_MODEL)];
@@ -657,7 +679,7 @@ functions.http('analyzeProduct', async (req, res) => {
     let modelError = null;
     for (const model of models) {
       try {
-        result = await callGemini(apiKey, model, jpegBase64List, promptText, startedAt);
+        result = await callGemini(apiKey, model, jpegBase64List, promptText, startedAt, overrideThinking);
         break;
       } catch (e) {
         if (e instanceof GeminiError && e.category === 'MODEL_ERROR' && e.status === 404) {
@@ -843,7 +865,7 @@ functions.http('analyzeProduct', async (req, res) => {
       photos: jpegs.length,
       totalMs: Date.now() - startedAt,
     }));
-    return res.status(200).json({ ...p, _meta: { model: result.model, attempts: result.attempts, guards: appliedGuards, derived_suggested_price: derivedSuggestedPrice } });
+    return res.status(200).json({ ...p, _meta: { model: result.model, attempts: result.attempts, thinking: result.thinking || 'default', guards: appliedGuards, derived_suggested_price: derivedSuggestedPrice } });
   } catch (e) {
     const category = e instanceof GeminiError ? e.category : 'MODEL_ERROR';
     const status = e instanceof GeminiError && e.status >= 400 ? e.status : 502;
