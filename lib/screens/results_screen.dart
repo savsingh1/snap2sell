@@ -37,7 +37,8 @@ Future<void> _addPhotoFromSourceSheet(
   final choice = await showModalBottomSheet<ImageSource>(
     context: context,
     shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      borderRadius:
+          BorderRadius.vertical(top: Radius.circular(SnapRadius.sheet)),
     ),
     builder: (sheetContext) => SafeArea(
       child: Padding(
@@ -162,7 +163,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: const Color(0xFFFFF3E0),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: const Color(0xFFFFB74D)),
               ),
               child: Column(
@@ -210,7 +211,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: const Color(0xFFE8F0FE),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: const Color(0xFF90CAF9)),
               ),
               child: Column(
@@ -267,7 +268,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: const Color(0xFFFFF3E0),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: const Color(0xFFFFB74D)),
               ),
               child: Row(
@@ -480,7 +481,7 @@ class _PropertyRoutingPanel extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFFE8F5E9),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: const Color(0xFFA5D6A7)),
       ),
       child: Column(
@@ -709,7 +710,7 @@ class _Thumb extends StatelessWidget {
       child: Stack(
         children: [
           ClipRRect(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(14),
             child: SizedBox.expand(child: image),
           ),
           if (badge != null)
@@ -773,7 +774,7 @@ class _AddTile extends StatelessWidget {
         onPressed: onTap,
         style: OutlinedButton.styleFrom(
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(14),
           ),
           side: const BorderSide(color: Color(0xFFE4E0F2)),
           padding: EdgeInsets.zero,
@@ -815,11 +816,19 @@ class _PhotoPreview extends StatelessWidget {
                   size: 48, color: SnapColors.primary),
             );
     }
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: AspectRatio(
-        aspectRatio: 4 / 3,
-        child: image,
+    return Container(
+      decoration: const BoxDecoration(
+        borderRadius: BorderRadius.all(Radius.circular(SnapRadius.card)),
+        boxShadow: SnapShadows.card,
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(SnapRadius.card),
+        child: AspectRatio(
+          aspectRatio: 4 / 3,
+          // Shares its Hero tag with the Processing ring photo, so the
+          // analysed photo expands into this preview on navigation.
+          child: Hero(tag: 'snap-photo-hero', child: image),
+        ),
       ),
     );
   }
@@ -842,7 +851,7 @@ class _PriceCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -873,8 +882,9 @@ class _PriceCard extends StatelessWidget {
                 FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
               ],
               style: const TextStyle(
-                fontSize: 26,
+                fontSize: 30,
                 fontWeight: FontWeight.w800,
+                letterSpacing: -0.5,
                 color: SnapColors.primary,
               ),
               decoration: const InputDecoration(
