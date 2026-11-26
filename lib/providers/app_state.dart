@@ -10,6 +10,7 @@ import '../models/ai_analysis_result.dart';
 import '../models/item.dart';
 import '../services/ai_logger.dart';
 import '../services/ai_service.dart';
+import '../services/billing_service.dart';
 import '../services/image_service.dart';
 import '../services/listing_service.dart';
 import '../services/real_estate/permit_adapters.dart';
@@ -34,7 +35,9 @@ class AppState extends ChangeNotifier {
     AiService? aiService,
     ImagePicker? imagePicker,
     ImageService? imageService,
-  })  : _storage = storage ?? LocalStorageService(),
+    BillingService? billing,
+  })  : _billing = billing,
+        _storage = storage ?? LocalStorageService(),
         _listing = listing ?? ListingService(),
         // Workstream B: the default pipeline is wrapped with the additive
         // real-estate decorator. Non-real-estate results pass through
@@ -55,6 +58,10 @@ class AppState extends ChangeNotifier {
   final AiService _aiService;
   final ImagePicker _imagePicker;
   final ImageService _imageService;
+
+  /// Store billing service, when one was injected (tests). The real one
+  /// is created lazily by the [billing] getter.
+  BillingService? _billing;
 
   List<Item> _items = [];
   Item? _currentItem;
@@ -154,6 +161,17 @@ class AppState extends ChangeNotifier {
   Future<void> init() async {
     _items = await _storage.loadItems();
     await _loadPayoutPrefs();
+    // Store billing initialises with the rest of the app. With no
+    // product ids configured it settles into its not-configured state
+    // without touching the store. A billing failure must never break
+    // the free app, so anything unexpected is swallowed here — billing
+    // errors live in the billing state, not in app startup.
+    try {
+      billing.addListener(notifyListeners);
+      await billing.initialise();
+    } catch (_) {
+      // Optional plumbing; the free app loads regardless.
+    }
     _loaded = true;
     notifyListeners();
   }
@@ -181,6 +199,24 @@ class AppState extends ChangeNotifier {
       _payoutEmail.isNotEmpty ||
       _payoutPhone.isNotEmpty ||
       _payoutNote.isNotEmpty;
+
+  // ----- store billing -----------------------------------------------------
+  // Optional paid-tier plumbing. Fully inert unless product ids were
+  // configured at build time (SNAP2SELL_PRODUCT_IDS) — see
+  // docs/store-billing.md. No feature is gated on billing in this build.
+
+  /// The billing service. Created lazily so merely constructing
+  /// [AppState] never touches the store layer.
+  BillingService get billing => _billing ??= BillingService.fromAppConfig();
+
+  /// True when store products were configured at build time. Purchase
+  /// UI (the Profile tile, the premium screen) exists only then.
+  bool get billingConfigured => billing.isConfigured;
+
+  /// Client-side entitlement record: the store says this device owns
+  /// at least one configured product. NOT proof of payment — see
+  /// [BillingService.hasVerifiedEntitlement] before gating anything.
+  bool get hasPremiumEntitlement => billing.hasEntitlement;
 
   Future<void> _loadPayoutPrefs() async {
     final prefs = await SharedPreferences.getInstance();
