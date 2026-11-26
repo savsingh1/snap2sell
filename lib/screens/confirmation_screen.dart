@@ -24,16 +24,31 @@ class ConfirmationScreen extends StatelessWidget {
           children: [
             const Spacer(),
             Center(
-              child: Container(
-                padding: const EdgeInsets.all(22),
-                decoration: BoxDecoration(
-                  color: SnapColors.accent.withValues(alpha: 0.25),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.check_rounded,
-                  size: 56,
-                  color: SnapColors.accentDark,
+              // Layered teal halo with a gentle settle-in scale.
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(begin: 0.85, end: 1),
+                duration: const Duration(milliseconds: 350),
+                curve: Curves.easeOutBack,
+                builder: (context, scale, child) =>
+                    Transform.scale(scale: scale, child: child),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: SnapColors.accent.withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Container(
+                    padding: const EdgeInsets.all(22),
+                    decoration: BoxDecoration(
+                      color: SnapColors.accent.withValues(alpha: 0.25),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.check_rounded,
+                      size: 56,
+                      color: SnapColors.accentDark,
+                    ),
+                  ),
                 ),
               ),
             ),
