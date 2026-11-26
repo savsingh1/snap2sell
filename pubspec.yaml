@@ -34,6 +34,7 @@ dependencies:
 
   # Best-effort "open marketplace sell page" links
   url_launcher: ^6.2.5
+  in_app_purchase: ^3.3.1
 
 dev_dependencies:
   flutter_test:
