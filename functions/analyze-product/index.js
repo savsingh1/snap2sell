@@ -668,7 +668,12 @@ functions.http('analyzeProduct', async (req, res) => {
         // vs MacBook Pro, and the model kept committing to "Air" anyway
         // (rounds 2-3) despite the prompt rule. With exactly one photo and
         // no model on record, enforce the parent family server-side.
-        if (imageInputs.length === 1 && !p.model &&
+        // Round 3.6 extension: a multi-photo set WITH a mismatch warning
+        // is also one photo per item — the primary item still rests on a
+        // single photo, so the same enforcement applies.
+        if ((imageInputs.length === 1 ||
+             (typeof p.photo_mismatch_warning === 'string' &&
+              p.photo_mismatch_warning.length > 0)) && !p.model &&
             (/MacBook (Air|Pro)/i.test(p.product_family || '') ||
              /MacBook (Air|Pro)/i.test(p.product_name || ''))) {
           p.product_family = 'MacBook';
