@@ -232,7 +232,7 @@ Respond with ONLY a single JSON object (no markdown fences, no commentary) with 
   "user_message": "short user-facing explanation when recognized is false, else ''",
   "photo_mismatch_warning": "'' normally; in multi-photo mode, a concrete description of the conflict when the photos appear to show different items"
 }
-"confidence" is 0-100. Below 60 set needs_more_photos=true and list the exact shots that would help, e.g. "Take a photo of the model-number label.", "Take a photo of the front of the product.", "Take a photo of the bottom sticker.", "Take a photo of the packaging."
+"confidence" is 0-100. Below 60 set needs_more_photos=true and list the exact shots that would help, e.g. "Take a photo of the model-number label.", "Take a photo of the front of the product.", "Take a photo of the bottom sticker.", "Take a photo of the packaging." For large appliances, when the submitted photo is small, cropped, or partial, include a request in "recommended_photos" for one full top-to-bottom photo of the whole unit.
 "identification_level" is "exact" when the precise model/variant is identified, or "product_family" when only the brand + product family is known (Apple/Tesla rules above). Set "needs_more_information": true when a photo of the model number / About This Mac screen / VIN would sharpen the result without blocking the listing.`;
 
 // ---------------------------------------------------------------------------
@@ -552,11 +552,22 @@ functions.http('analyzeProduct', async (req, res) => {
 
     // Normalize: EXIF orientation fixed, longest side <= imageMaxEdgePx,
     // JPEG q80. Handles JPEG/PNG/WEBP/HEIC input — Gemini gets clean JPEG.
+    // Largest ORIGINAL edge (px) across the submitted photos, measured from
+    // sharp metadata before resize — input for the round 3.5 low-resolution
+    // guard below. Stays null when no photo yielded dimensions; the guard
+    // then simply does not fire.
+    let maxOriginalEdge = null;
     const jpegs = [];
     try {
       for (let i = 0; i < imageInputs.length; i++) {
         const input = Buffer.from(imageInputs[i], 'base64');
         const meta = await sharp(input).metadata();
+        if (Number.isFinite(meta.width) || Number.isFinite(meta.height)) {
+          const edge = Math.max(meta.width || 0, meta.height || 0);
+          maxOriginalEdge = maxOriginalEdge == null
+            ? edge
+            : Math.max(maxOriginalEdge, edge);
+        }
         const jpeg = await sharp(input)
           .rotate() // honor EXIF orientation
           .resize({ width: imageMaxEdgePx, height: imageMaxEdgePx, fit: 'inside', withoutEnlargement: true })
@@ -613,6 +624,10 @@ functions.http('analyzeProduct', async (req, res) => {
     // whatever the model put in the listing fields. The explanation lives in
     // rejection_reason / user_message instead. Product prompt path only —
     // real-estate mode returns a different shape and is left untouched.
+    // The round 3.5 deterministic guards below record each firing here;
+    // the list is surfaced as _meta.guards so guard activity is auditable
+    // (empty when no guard fires).
+    const appliedGuards = [];
     if (mode !== 'real_estate') {
       if (typeof p.photo_mismatch_warning !== 'string') p.photo_mismatch_warning = '';
       if (!p.recognized) {
@@ -649,6 +664,31 @@ functions.http('analyzeProduct', async (req, res) => {
         if (p.category === 'Automotive') {
           p.needs_more_information = true;
         }
+        // Round 3.5 guard 1 — one angled photo cannot settle MacBook Air
+        // vs MacBook Pro, and the model kept committing to "Air" anyway
+        // (rounds 2-3) despite the prompt rule. With exactly one photo and
+        // no model on record, enforce the parent family server-side.
+        if (imageInputs.length === 1 && !p.model &&
+            (/MacBook (Air|Pro)/i.test(p.product_family || '') ||
+             /MacBook (Air|Pro)/i.test(p.product_name || ''))) {
+          p.product_family = 'MacBook';
+          p.product_name = 'Apple MacBook';
+          if (typeof p.suggested_title === 'string') {
+            p.suggested_title = p.suggested_title.replace(/MacBook (Air|Pro)/gi, 'MacBook');
+          }
+          p.identification_level = 'product_family';
+          p.confidence = Math.min(p.confidence, 70);
+          p.needs_more_photos = true;
+          p.needs_more_information = true;
+          appliedGuards.push('single_photo_subfamily_parent');
+        }
+        // Round 3.5 guard 2 — a tiny photo with no legible brand cannot
+        // carry high confidence (a 403x403 unbranded fridge was rated 70
+        // in rounds 2-3). Cap it from the measured original image size.
+        if (!p.brand && maxOriginalEdge != null && maxOriginalEdge <= 640) {
+          p.confidence = Math.min(p.confidence, 60);
+          appliedGuards.push('low_res_confidence_cap');
+        }
       }
     }
 
@@ -658,7 +698,7 @@ functions.http('analyzeProduct', async (req, res) => {
       photos: jpegs.length,
       totalMs: Date.now() - startedAt,
     }));
-    return res.status(200).json({ ...p, _meta: { model: result.model, attempts: result.attempts } });
+    return res.status(200).json({ ...p, _meta: { model: result.model, attempts: result.attempts, guards: appliedGuards } });
   } catch (e) {
     const category = e instanceof GeminiError ? e.category : 'MODEL_ERROR';
     const status = e instanceof GeminiError && e.status >= 400 ? e.status : 502;
