@@ -12,6 +12,7 @@ import '../services/ai_logger.dart';
 import '../services/ai_service.dart';
 import '../services/image_service.dart';
 import '../services/listing_service.dart';
+import '../services/real_estate/permit_adapters.dart';
 import '../services/real_estate/property_models.dart';
 import '../services/real_estate/real_estate_ai_service.dart';
 import '../services/storage_service.dart';
@@ -38,8 +39,14 @@ class AppState extends ChangeNotifier {
         // Workstream B: the default pipeline is wrapped with the additive
         // real-estate decorator. Non-real-estate results pass through
         // byte-identical; injected test doubles bypass the wrapper entirely.
-        _aiService =
-            aiService ?? RealEstateAiService(AiServiceFactory.create()),
+        _aiService = aiService ??
+            RealEstateAiService(
+              AiServiceFactory.create(),
+              // Valuation Phase 0: permits are served by the live
+              // per-municipality open-data adapters; every other
+              // real-estate source keeps its honest placeholder.
+              providers: realEstateProvidersPhase0(),
+            ),
         _imagePicker = imagePicker ?? ImagePicker(),
         _imageService = imageService ?? ImageService();
 
