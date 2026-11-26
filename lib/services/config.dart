@@ -43,4 +43,26 @@ class AppConfig {
   );
 
   static bool get hasFacebookAppId => facebookAppId.isNotEmpty;
+
+  /// Store product ids for the optional paid tier, injected at build time:
+  ///   flutter run --dart-define=SNAP2SELL_PRODUCT_IDS=... \
+  ///               --dart-define=AI_BACKEND_URL=... (etc.)
+  ///
+  /// Format: comma-separated entries, each `productId` or
+  /// `productId:kind`, where kind is one of `consumable`,
+  /// `nonConsumable`, `subscription` (default `nonConsumable`).
+  /// Parsing lives in billing_config.dart; the billing layer itself is
+  /// in billing_service.dart.
+  ///
+  /// CONFIG REQUIRED: empty until the owner creates the products in
+  /// Play Console and decides the paid-tier shape (price, subscription
+  /// vs one-time, what it unlocks) — see docs/store-billing.md. While
+  /// empty, billing is fully inert: no store queries, no purchase UI
+  /// anywhere, and the app behaves exactly as the free app.
+  static const String billingProductIds = String.fromEnvironment(
+    'SNAP2SELL_PRODUCT_IDS',
+    defaultValue: '',
+  );
+
+  static bool get hasBillingProducts => billingProductIds.trim().isNotEmpty;
 }
