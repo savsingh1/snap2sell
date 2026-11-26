@@ -515,7 +515,7 @@ functions.http('analyzeProduct', async (req, res) => {
     if (rawLen > MAX_BODY_BYTES) {
       return res.status(413).json({ error: { category: 'BAD_IMAGE', message: 'Photo is too large. Try a smaller image.' } });
     }
-    const { imageBase64, images, mimeType, mode, imageMaxEdge } = req.body || {};
+    const { imageBase64, images, mimeType, mode, imageMaxEdge, modelOverride } = req.body || {};
     // Latency knob: longest image edge sent to Gemini. The IMAGE_MAX_EDGE
     // env var sets the default (1600); a request may override it with
     // "imageMaxEdge". Always clamped to 512-1600.
@@ -589,6 +589,50 @@ functions.http('analyzeProduct', async (req, res) => {
       return res.status(400).json({ error: { category: 'BAD_IMAGE', message: 'That file is not a readable photo. Try a JPEG or PNG.' } });
     }
 
+    // Round 5 blur fast-path — an extremely blurred photo cannot be
+    // identified, and paying for a full model call to learn that costs
+    // the user 7-13s. Sharpness is measured as the standard deviation of
+    // a Laplacian convolution on a 320px grayscale copy. Calibrated on
+    // the 13-photo test pack (sharp 0.33.5): the heavy-blur case scores
+    // 1.18 while the softest real product photo scores 8.29, so the 3.0
+    // threshold sits roughly 2.5x from both sides and only fires on
+    // extreme blur. Single-photo requests only; any metric failure
+    // falls through to the model unchanged.
+    if (!multiMode && mode !== 'real_estate') {
+      try {
+        const { data } = await sharp(jpegs[0])
+          .resize({ width: 320 })
+          .grayscale()
+          .convolve({ width: 3, height: 3, kernel: [0, 1, 0, 1, -4, 1, 0, 1, 0] })
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        let mean = 0;
+        for (const v of data) mean += v;
+        mean /= data.length;
+        let varSum = 0;
+        for (const v of data) { const d = v - mean; varSum += d * d; }
+        const lapStd = Math.sqrt(varSum / data.length);
+        if (lapStd < 3.0) {
+          console.log(JSON.stringify({ evt: 'blur_fast_path', lapStd: Math.round(lapStd * 100) / 100, totalMs: Date.now() - startedAt }));
+          return res.status(200).json({
+            recognized: false,
+            brand: '', model: '', product_name: '', product_family: '',
+            category: 'Miscellaneous', subcategory: '', color: '',
+            condition: '', confidence: 0, identification_level: '',
+            needs_more_photos: true, needs_more_information: false,
+            price_low: 0, price_high: 0, suggested_price: 0,
+            included_accessories: [], missing_parts: [], visible_damage: [],
+            suggested_title: '', short_description: '', search_keywords: [],
+            recommended_photos: ['Take a new photo in good light, holding the camera steady, and tap the item on screen to focus before shooting.'],
+            rejection_reason: 'blurry_image',
+            user_message: 'That photo is too blurry to identify. Try again in good light, hold the camera steady, and tap the item to focus before taking the photo.',
+            photo_mismatch_warning: '',
+            _meta: { model: 'blur_fast_path', attempts: 0, guards: ['blur_fast_path'], derived_suggested_price: false },
+          });
+        }
+      } catch { /* metric unavailable: fall through to the model */ }
+    }
+
     // Single photo: SYSTEM_PROMPT alone, exactly as before.
     // Real-estate mode (UNDEPLOYED): uses the property-condition prompt.
     const promptText = mode === 'real_estate'
@@ -598,7 +642,17 @@ functions.http('analyzeProduct', async (req, res) => {
         : SYSTEM_PROMPT;
     const jpegBase64List = jpegs.map((j) => j.toString('base64'));
 
-    const models = [PRIMARY_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PRIMARY_MODEL)];
+    // Round 5 A/B knob: a per-request model override, honoured ONLY when
+    // ALLOW_MODEL_OVERRIDE=1 in the environment (set temporarily for
+    // controlled latency/quality comparisons; absent in normal service).
+    // A name the API has retired 404s and the chain falls through to the
+    // primary, so probing an unknown name is safe.
+    const overrideModel = process.env.ALLOW_MODEL_OVERRIDE === '1' &&
+      typeof modelOverride === 'string' && /^[a-zA-Z0-9.\-]{1,64}$/.test(modelOverride)
+      ? modelOverride : null;
+    const models = overrideModel
+      ? [overrideModel, ...[PRIMARY_MODEL, ...FALLBACK_MODELS].filter((m) => m !== overrideModel)]
+      : [PRIMARY_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PRIMARY_MODEL)];
     let result = null;
     let modelError = null;
     for (const model of models) {
