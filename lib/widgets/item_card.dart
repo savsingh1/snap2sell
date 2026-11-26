@@ -20,7 +20,7 @@ class ItemCard extends StatelessWidget {
     final appState = context.read<AppState>();
     return Card(
       child: InkWell(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(SnapRadius.card),
         onTap: () {
           appState.openItem(item);
           Navigator.of(context).push(
