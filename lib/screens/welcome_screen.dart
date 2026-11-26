@@ -6,21 +6,66 @@ import '../widgets/capture_helpers.dart';
 import 'main_scaffold.dart';
 
 /// First-run screen: brand hero, capture CTA, photo tips.
-class WelcomeScreen extends StatelessWidget {
+class WelcomeScreen extends StatefulWidget {
   const WelcomeScreen({super.key});
+
+  @override
+  State<WelcomeScreen> createState() => _WelcomeScreenState();
+}
+
+class _WelcomeScreenState extends State<WelcomeScreen>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _intro = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 650),
+  )..forward();
+
+  @override
+  void dispose() {
+    _intro.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [SnapColors.primary, SnapColors.primaryDark],
+      body: Stack(
+        children: [
+          const Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  stops: [0, 0.5, 1],
+                  colors: [
+                    Color(0xFF6A3DF0),
+                    SnapColors.primary,
+                    SnapColors.primaryDeep,
+                  ],
+                ),
+              ),
+            ),
           ),
-        ),
-        child: SafeArea(
+          // Faint teal sheen from the logo accent, top right.
+          Positioned(
+            top: -90,
+            right: -70,
+            child: Container(
+              width: 260,
+              height: 260,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    SnapColors.accent.withValues(alpha: 0.16),
+                    SnapColors.accent.withValues(alpha: 0),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
               // Scroll-safe on short screens; spacers still distribute the
@@ -35,38 +80,54 @@ class WelcomeScreen extends StatelessWidget {
                       child: Column(
                         children: [
                 const Spacer(flex: 2),
-                const SnapLogo(size: 96),
-                const SizedBox(height: 20),
-                const Text(
-                  'Snap2Sell',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 40,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.5,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Snap it. Sell it. Done.',
-                  style: TextStyle(
-                    color: SnapColors.accent,
-                    fontSize: 19,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Snap a photo of any household item and AI writes the '
-                  'listing, prices it, and preps it for every marketplace.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.85),
-                    fontSize: 15,
-                    height: 1.45,
+                _Entrance(
+                  animation: _intro,
+                  interval: const Interval(0, 0.65, curve: Curves.easeOut),
+                  dy: 14,
+                  child: Column(
+                    children: [
+                      const SnapLogo(size: 96),
+                      const SizedBox(height: 20),
+                      const Text(
+                        'Snap2Sell',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 40,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Snap it. Sell it. Done.',
+                        style: TextStyle(
+                          color: SnapColors.accent,
+                          fontSize: 19,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Snap a photo of any household item and AI writes '
+                        'the listing, prices it, and preps it for every '
+                        'marketplace.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.85),
+                          fontSize: 15,
+                          height: 1.45,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const Spacer(flex: 2),
+                _Entrance(
+                  animation: _intro,
+                  interval: const Interval(0.3, 1, curve: Curves.easeOut),
+                  dy: 18,
+                  child: Column(
+                    children: [
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
@@ -98,6 +159,9 @@ class WelcomeScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 20),
                 _TipsCard(),
+                    ],
+                  ),
+                ),
                 const Spacer(),
                 TextButton(
                   onPressed: () => Navigator.of(context).pushReplacement(
@@ -120,8 +184,41 @@ class WelcomeScreen extends StatelessWidget {
               );
             },
           ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One entrance group for the welcome hero: fades in while rising a few
+/// pixels, on its own slice of the shared intro animation.
+class _Entrance extends StatelessWidget {
+  const _Entrance({
+    required this.animation,
+    required this.interval,
+    required this.dy,
+    required this.child,
+  });
+
+  final Animation<double> animation;
+  final Interval interval;
+  final double dy;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final curved = CurvedAnimation(parent: animation, curve: interval);
+    return AnimatedBuilder(
+      animation: curved,
+      builder: (context, child) => Opacity(
+        opacity: curved.value.clamp(0.0, 1.0),
+        child: Transform.translate(
+          offset: Offset(0, dy * (1 - curved.value)),
+          child: child,
         ),
       ),
+      child: child,
     );
   }
 }
@@ -140,7 +237,7 @@ class _TipsCard extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
       ),
       child: Column(
