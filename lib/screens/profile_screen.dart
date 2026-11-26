@@ -6,6 +6,7 @@ import '../models/item.dart';
 import '../providers/app_state.dart';
 import '../widgets/capture_helpers.dart';
 import 'payment_methods_screen.dart';
+import 'premium_screen.dart';
 
 /// Step 7: profile — account, payment methods, past listings, help.
 class ProfileScreen extends StatelessWidget {
@@ -86,6 +87,26 @@ class ProfileScreen extends StatelessWidget {
           Card(
             child: Column(
               children: [
+                // Store billing: this tile (and the premium screen
+                // behind it) exists ONLY when paid products were
+                // configured at build time. In the default build there
+                // is no purchase UI anywhere — see
+                // docs/store-billing.md.
+                if (appState.billingConfigured) ...[
+                  _Tile(
+                    icon: Icons.workspace_premium_rounded,
+                    title: 'Premium',
+                    subtitle: appState.hasPremiumEntitlement
+                        ? 'Active on this device'
+                        : 'Optional paid upgrade',
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const PremiumScreen(),
+                      ),
+                    ),
+                  ),
+                  const Divider(height: 1, indent: 16, endIndent: 16),
+                ],
                 _Tile(
                   icon: Icons.payments_rounded,
                   title: 'Payment Methods',
