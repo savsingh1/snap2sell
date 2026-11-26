@@ -130,6 +130,10 @@ Pro), do NOT pick one sub-family. Identify at the PARENT family instead:
   resolving photos listed in recommended_photos
 - "suggested_title" must NOT contain either sub-family name — use the
   parent line only.
+- "short_description" must NOT state design-shape, port-count or other
+  specifics that distinguish the sub-families (for example a wedge profile
+  or a port count that points to one sub-family); describe only plainly
+  visible features that do not imply one sub-family over another.
 This rule overrides any sub-family guidance elsewhere in this prompt
 whenever the sub-family is not CLEARLY established by visible evidence.
 
@@ -628,6 +632,7 @@ functions.http('analyzeProduct', async (req, res) => {
     // the list is surfaced as _meta.guards so guard activity is auditable
     // (empty when no guard fires).
     const appliedGuards = [];
+    let derivedSuggestedPrice = false;
     if (mode !== 'real_estate') {
       if (typeof p.photo_mismatch_warning !== 'string') p.photo_mismatch_warning = '';
       if (!p.recognized) {
@@ -740,6 +745,40 @@ functions.http('analyzeProduct', async (req, res) => {
             Number(p.price_low) > 0 && Number(p.price_high) > Number(p.price_low)) {
           p.suggested_price = Math.round((Number(p.price_low) + Number(p.price_high)) / 2);
           appliedGuards.push('suggested_price_midpoint');
+          derivedSuggestedPrice = true;
+        }
+        // Round 4.1 guard 4 — the flags promise the seller a way to
+        // resolve the identification; an empty prompt list breaks that
+        // promise (Claude and Gemini both flagged a live round 4 case:
+        // needs_more_photos true, recommended_photos empty — model
+        // variance). Backfill category-appropriate verification prompts
+        // server-side. Real Estate is excluded: its flow collects the
+        // address and property details separately.
+        if (p.category !== 'Real Estate' &&
+            (p.needs_more_photos || p.needs_more_information) &&
+            (!Array.isArray(p.recommended_photos) || p.recommended_photos.length === 0)) {
+          const PROMPTS_BY_CATEGORY = {
+            Electronics: [
+              'Take a photo of the system information or settings screen showing the model and specifications (for example, About This Mac on a laptop).',
+              'Take a close-up photo of any model or serial label on the item (often on the underside or back).',
+              'Take a photo of the original box or packaging label if you have it.',
+            ],
+            Automotive: [
+              'Take a photo of the VIN plate (driver-side dashboard or door jamb).',
+              'Take a photo of the odometer reading.',
+              'Take a photo of the engine bay.',
+            ],
+            Appliances: [
+              'Take a close-up photo of the rating plate or label showing the brand and model number.',
+              'Take one full photo of the whole item from the front.',
+            ],
+          };
+          p.recommended_photos = PROMPTS_BY_CATEGORY[p.category] || [
+            'Take a close-up photo of any brand name, logo or label on the item.',
+            'Take one full photo of the whole item.',
+          ];
+          p.needs_more_photos = true;
+          appliedGuards.push('photo_prompts_backfill');
         }
       }
     }
@@ -750,7 +789,7 @@ functions.http('analyzeProduct', async (req, res) => {
       photos: jpegs.length,
       totalMs: Date.now() - startedAt,
     }));
-    return res.status(200).json({ ...p, _meta: { model: result.model, attempts: result.attempts, guards: appliedGuards } });
+    return res.status(200).json({ ...p, _meta: { model: result.model, attempts: result.attempts, guards: appliedGuards, derived_suggested_price: derivedSuggestedPrice } });
   } catch (e) {
     const category = e instanceof GeminiError ? e.category : 'MODEL_ERROR';
     const status = e instanceof GeminiError && e.status >= 400 ? e.status : 502;
