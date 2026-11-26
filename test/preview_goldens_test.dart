@@ -31,11 +31,14 @@ import 'package:snap2sell/providers/app_state.dart';
 import 'package:snap2sell/screens/confirmation_screen.dart';
 import 'package:snap2sell/screens/main_scaffold.dart';
 import 'package:snap2sell/screens/platforms_screen.dart';
+import 'package:snap2sell/screens/premium_screen.dart';
 import 'package:snap2sell/screens/processing_screen.dart';
 import 'package:snap2sell/screens/results_screen.dart';
 import 'package:snap2sell/screens/sell_hub_screen.dart';
 import 'package:snap2sell/screens/welcome_screen.dart';
 import 'package:snap2sell/services/ai_service.dart';
+import 'package:snap2sell/services/billing_config.dart';
+import 'package:snap2sell/services/billing_service.dart';
 import 'package:snap2sell/services/storage_service.dart';
 
 class _TolerantComparator extends LocalFileComparator {
@@ -64,6 +67,59 @@ class _FakeStorage implements StorageService {
 
   @override
   Future<void> saveItems(List<Item> items) async {}
+}
+
+/// Simulates a configured store for the premium golden. The product
+/// titles/descriptions/prices here stand in for what a real store
+/// listing would return at runtime — the app itself invents none of it.
+class _FakeBillingGateway implements BillingStoreGateway {
+  @override
+  Future<bool> isAvailable() async => true;
+
+  @override
+  Stream<List<StorePurchase>> get purchaseUpdates =>
+      const Stream<List<StorePurchase>>.empty();
+
+  @override
+  Future<StoreProductCatalog> queryProducts(
+    List<BillingProductConfig> configs,
+  ) async {
+    const fixtures = {
+      'premium_monthly': StoreProduct(
+        id: 'premium_monthly',
+        kind: BillingProductKind.subscription,
+        title: 'Premium Monthly',
+        description: 'Billed monthly through the store. '
+            'Cancel anytime in your store account.',
+        price: 'CA\$6.99',
+        currencyCode: 'CAD',
+      ),
+      'premium_lifetime': StoreProduct(
+        id: 'premium_lifetime',
+        kind: BillingProductKind.nonConsumable,
+        title: 'Premium Lifetime',
+        description: 'A single store payment for this product.',
+        price: 'CA\$49.99',
+        currencyCode: 'CAD',
+      ),
+    };
+    return StoreProductCatalog(
+      products: [
+        for (final c in configs)
+          if (fixtures.containsKey(c.id)) fixtures[c.id]!,
+      ],
+      notFoundIds: const [],
+    );
+  }
+
+  @override
+  Future<bool> buy(StoreProduct product) async => false;
+
+  @override
+  Future<void> restorePurchases() async {}
+
+  @override
+  Future<void> completePurchase(StorePurchase purchase) async {}
 }
 
 late final String _photoPath;
@@ -180,8 +236,11 @@ Future<Uint8List> _makePhotoBytes() async {
   return data!.buffer.asUint8List();
 }
 
-AppState _state(List<Item> items) =>
-    AppState(storage: _FakeStorage(items), aiService: MockAiService(seed: 1));
+AppState _state(List<Item> items, {BillingService? billing}) => AppState(
+      storage: _FakeStorage(items),
+      aiService: MockAiService(seed: 1),
+      billing: billing,
+    );
 
 Widget _app(AppState state, Widget home) {
   return ChangeNotifierProvider<AppState>.value(
@@ -316,6 +375,24 @@ void main() {
     await tester.pumpWidget(_app(state, const SellHubScreen()));
     await settleShort(tester);
     await shootGolden(tester, SellHubScreen, 'sell_hub.png');
+  });
+
+  testWidgets('preview: premium', (tester) async {
+    usePhoneSurface(tester);
+    // Configured billing against the fake store: this is the only way
+    // the paywall surface exists (in a default build nothing leads to
+    // it and the service never touches a store).
+    final billing = BillingService(
+      products: parseBillingProductIds(
+        'premium_monthly:subscription,premium_lifetime:nonConsumable',
+      ),
+      gateway: _FakeBillingGateway(),
+    );
+    await billing.initialise();
+    final state = _state(const [], billing: billing)..init();
+    await tester.pumpWidget(_app(state, const PremiumScreen()));
+    await settleShort(tester);
+    await shootGolden(tester, PremiumScreen, 'premium.png');
   });
 
   testWidgets('preview: confirmation', (tester) async {
