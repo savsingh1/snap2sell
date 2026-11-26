@@ -87,11 +87,16 @@ class _SnapCtaCard extends StatelessWidget {
         width: double.infinity,
         padding: const EdgeInsets.all(22),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(SnapRadius.card),
           gradient: const LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [SnapColors.primary, SnapColors.primaryDark],
+            stops: [0, 0.55, 1],
+            colors: [
+              Color(0xFF6A3DF0),
+              SnapColors.primary,
+              SnapColors.primaryDeep,
+            ],
           ),
         ),
         child: Column(
@@ -149,7 +154,7 @@ class _ValueSummaryCard extends StatelessWidget {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: SnapColors.accent.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(16),
               ),
               child: const Icon(Icons.savings_rounded,
                   color: SnapColors.accentDark, size: 28),
