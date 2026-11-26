@@ -5,10 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_theme.dart';
 import '../models/item.dart';
 import '../providers/app_state.dart';
+import '../services/deep_links.dart';
 import 'platforms_screen.dart';
 import 'property_report_screen.dart';
 
@@ -315,6 +317,21 @@ class _ResultsScreenState extends State<ResultsScreen> {
           const SizedBox(height: 12),
           _PhotoStrip(appState: appState, item: item),
           const SizedBox(height: 16),
+          // Valuation Phase 0: Facebook Marketplace offers apps no data
+          // feed, so for vehicles the honest comparison route is a
+          // prefilled Marketplace search in the user's own session.
+          if (item.category == 'Automotive') ...[
+            OutlinedButton.icon(
+              icon: const Icon(Icons.search, size: 18),
+              label: const Text('Compare prices on Facebook Marketplace'),
+              onPressed: () => launchUrl(
+                ValuationDeepLinks.facebookMarketplaceVehicleSearch(
+                    item.title),
+                mode: LaunchMode.externalApplication,
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
           _label('Item title'),
           TextField(
             controller: _title,
