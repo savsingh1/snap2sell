@@ -681,6 +681,17 @@ functions.http('analyzeProduct', async (req, res) => {
           if (typeof p.suggested_title === 'string') {
             p.suggested_title = p.suggested_title.replace(/MacBook (Air|Pro)/gi, 'MacBook');
           }
+          // Round 3.7: the same phrase can survive in free-text fields
+          // (a round 3 live output kept "MacBook Air" in the description
+          // after the structured fields were corrected). Scrub them too.
+          if (typeof p.short_description === 'string') {
+            p.short_description = p.short_description.replace(/MacBook (Air|Pro)/gi, 'MacBook');
+          }
+          for (const key of ['search_keywords', 'recommended_photos']) {
+            if (Array.isArray(p[key])) {
+              p[key] = p[key].map((s) => typeof s === 'string' ? s.replace(/MacBook (Air|Pro)/gi, 'MacBook') : s);
+            }
+          }
           p.identification_level = 'product_family';
           p.confidence = Math.min(p.confidence, 70);
           p.needs_more_photos = true;
@@ -693,6 +704,18 @@ functions.http('analyzeProduct', async (req, res) => {
         if (!p.brand && maxOriginalEdge != null && maxOriginalEdge <= 640) {
           p.confidence = Math.min(p.confidence, 60);
           appliedGuards.push('low_res_confidence_cap');
+        }
+        // Round 3.7 guard 3 — a populated price range with a zero point
+        // price is an internally broken listing field (Claude round 2
+        // scored it critical). The model chose the range; the point price
+        // is set to its midpoint so the fields are consistent. This sets
+        // no price level of its own and never touches real estate, whose
+        // prices stay 0 by design.
+        if (p.category !== 'Real Estate' &&
+            !(Number(p.suggested_price) > 0) &&
+            Number(p.price_low) > 0 && Number(p.price_high) > Number(p.price_low)) {
+          p.suggested_price = Math.round((Number(p.price_low) + Number(p.price_high)) / 2);
+          appliedGuards.push('suggested_price_midpoint');
         }
       }
     }
