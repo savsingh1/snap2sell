@@ -667,11 +667,16 @@ functions.http('analyzeProduct', async (req, res) => {
     const overrideModel = process.env.ALLOW_MODEL_OVERRIDE === '1' &&
       typeof modelOverride === 'string' && /^[a-zA-Z0-9.\-]{1,64}$/.test(modelOverride)
       ? modelOverride : null;
-    // Same gate for the thinking level: only the A/B harness may set it,
-    // and only to a known Gemini 3 level.
+    // Thinking level: the THINKING_LEVEL env var sets the production
+    // default (round 5 A/B winner: 'low' on the flagship model — same
+    // output quality, roughly 60% less latency). The A/B harness may
+    // still override per request under the ALLOW_MODEL_OVERRIDE gate.
+    const THINKING_LEVELS = ['minimal', 'low', 'medium', 'high'];
+    const envThinking = THINKING_LEVELS.includes(process.env.THINKING_LEVEL)
+      ? process.env.THINKING_LEVEL : null;
     const overrideThinking = process.env.ALLOW_MODEL_OVERRIDE === '1' &&
-      ['minimal', 'low', 'medium', 'high'].includes(thinkingLevel)
-      ? thinkingLevel : null;
+      THINKING_LEVELS.includes(thinkingLevel)
+      ? thinkingLevel : envThinking;
     const models = overrideModel
       ? [overrideModel, ...[PRIMARY_MODEL, ...FALLBACK_MODELS].filter((m) => m !== overrideModel)]
       : [PRIMARY_MODEL, ...FALLBACK_MODELS.filter((m) => m !== PRIMARY_MODEL)];
