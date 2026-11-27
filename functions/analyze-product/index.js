@@ -885,6 +885,7 @@ functions.http('analyzeProduct', async (req, res) => {
             let out = s
               .replace(/\b(two|three|four|five|\d+)\s+(USB-C\/Thunderbolt|USB-C|Thunderbolt|USB)\s+ports?\b/gi, 'USB-C/Thunderbolt ports')
               .replace(/\btapered wedge\b/gi, 'aluminum')
+              .replace(/\btapered\b/gi, 'slim')
               .replace(/\bwedge-style\b/gi, '')
               .replace(/\bwedge-shaped\b/gi, '')
               .replace(/\bwedge\b/gi, '');
