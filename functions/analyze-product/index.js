@@ -883,7 +883,7 @@ functions.http('analyzeProduct', async (req, res) => {
           const scrubDiagnostic = (s) => {
             if (typeof s !== 'string') return s;
             let out = s
-              .replace(/\b(two|three|four|five|\d+)\s+(USB-C\/Thunderbolt|USB-C|Thunderbolt|USB)\s+ports?\b/gi, 'USB-C/Thunderbolt ports')
+              .replace(/\b(two|three|four|five|\d+)\s+(USB-C\/Thunderbolt|Thunderbolt\/USB-C|USB-C|Thunderbolt|USB)\s+ports?\b/gi, 'USB-C/Thunderbolt ports')
               .replace(/\btapered wedge\b/gi, 'aluminum')
               .replace(/\btapered\b/gi, 'slim')
               .replace(/\bwedge-style\b/gi, '')
@@ -903,10 +903,12 @@ functions.http('analyzeProduct', async (req, res) => {
         // description (read off a placard or label) belongs in the
         // structured fields and the title, not only in prose (T3
         // critical: "Supreme Edition" survived only in the description).
+        let variantFound = false;
         {
           const editionMatch = `${p.short_description || ''} ${p.suggested_title || ''}`
             .match(/\b(Supreme|Limited|Special|Anniversary|Signature|Collector's) Edition\b/);
           if (editionMatch) {
+            variantFound = true;
             const edition = editionMatch[0];
             let promoted = false;
             if (p.product_name && !p.product_name.includes(edition)) {
@@ -937,6 +939,40 @@ functions.http('analyzeProduct', async (req, res) => {
           p.display_unit_warning = 'Photographed on a retail display. Confirm the actual unit for sale and what is included (packaging, cables, accessories) before listing.';
           p.needs_more_information = true;
           appliedGuards.push('display_unit_flag');
+        }
+        // Guard 6b — placard second pass: when a retail display was
+        // detected but the main pass named no edition anywhere, the
+        // placard transcription was likely skipped (round 6 canonical
+        // run: the model described "a Chinese pricing placard" without
+        // reading it). Make one focused call that does nothing but read
+        // the placard, at medium thinking, and promote whatever edition
+        // it returns through the same deterministic path as guard 6.
+        // Any failure leaves the main result untouched.
+        if (appliedGuards.includes('display_unit_flag') && !variantFound) {
+          try {
+            const placardPrompt = 'Look at the photo or photos. If a placard, sign, price card, label, or packaging in the photo names an EDITION or VARIANT of the product (for example a phrase like "Supreme Edition" or "Limited Edition", in any language), reply with ONLY this JSON object: {"variant": "<the edition or variant name, translated into English>"} . If no edition or variant is named anywhere in the photo, reply {"variant": ""}. Never guess an edition that is not written in the photo.';
+            const second = await callGemini(apiKey, result.model, jpegBase64List, placardPrompt, startedAt, 'medium');
+            const variant = typeof second?.parsed?.variant === 'string' ? second.parsed.variant.trim() : '';
+            if (variant && variant.length <= 60 && /edition/i.test(variant)) {
+              let promoted = false;
+              if (p.product_name && !p.product_name.includes(variant)) {
+                p.product_name = `${p.product_name} ${variant}`;
+                promoted = true;
+              }
+              if (typeof p.model === 'string' && p.model && !p.model.includes(variant)) {
+                const base = p.model;
+                p.model = `${p.model} ${variant}`;
+                if (typeof p.suggested_title === 'string' && p.suggested_title &&
+                    !p.suggested_title.includes(variant) && p.suggested_title.includes(base)) {
+                  p.suggested_title = p.suggested_title.replace(base, `${base} ${variant}`);
+                }
+                promoted = true;
+              }
+              if (promoted) appliedGuards.push('variant_second_pass');
+            }
+          } catch (e) {
+            console.log(JSON.stringify({ evt: 'placard_second_pass_failed', message: String(e && e.message || e).slice(0, 160) }));
+          }
         }
         // Guard 8 — plate text scrub: never publish a transcribed
         // registration plate; the model renders vanity plates as the
