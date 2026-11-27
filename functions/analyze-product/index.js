@@ -638,15 +638,18 @@ functions.http('analyzeProduct', async (req, res) => {
             brand: '', model: '', product_name: '', product_family: '',
             category: 'Miscellaneous', subcategory: '', color: '',
             condition: '', confidence: 0, identification_level: 'none',
-            needs_more_photos: true, needs_more_information: false,
+            // Round 9: aligned with rejection_normalize below — a
+            // refusal carries needs_more_photos false and no photo
+            // list; the retake guidance lives in user_message.
+            needs_more_photos: false, needs_more_information: false,
             price_low: 0, price_high: 0, suggested_price: 0,
             included_accessories: [], missing_parts: [], visible_damage: [],
             suggested_title: '', short_description: '', search_keywords: [],
-            recommended_photos: ['Take a new photo in good light, holding the camera steady, and tap the item on screen to focus before shooting.'],
+            recommended_photos: [],
             rejection_reason: 'blurry_image',
             user_message: 'That photo is too blurry to identify. Try again in good light, hold the camera steady, and tap the item to focus before taking the photo.',
             photo_mismatch_warning: '',
-            _meta: { model: 'blur_fast_path', attempts: 0, guards: ['blur_fast_path'], derived_suggested_price: false },
+            _meta: { model: 'blur_fast_path', attempts: 0, guards: ['blur_fast_path', 'rejection_normalize'], derived_suggested_price: false },
           });
         }
       } catch { /* metric unavailable: fall through to the model */ }
@@ -716,6 +719,9 @@ functions.http('analyzeProduct', async (req, res) => {
     // (empty when no guard fires).
     const appliedGuards = [];
     let derivedSuggestedPrice = false;
+    // Round 9: set by guard 2 when it caps confidence; the matching
+    // user_message note is applied near the end of the pipeline.
+    let lowResCapFired = false;
     if (mode !== 'real_estate') {
       if (typeof p.photo_mismatch_warning !== 'string') p.photo_mismatch_warning = '';
       if (!p.recognized) {
@@ -735,6 +741,20 @@ functions.http('analyzeProduct', async (req, res) => {
         // schema is consistent across outcomes (Gemini and Claude both
         // prescribed this in round 5).
         p.identification_level = 'none';
+        // Round 9 guard — rejection normalization: a refusal is not a
+        // listing in progress, so it must not simultaneously ask for
+        // more photos of the item (Claude round 8 flagged a
+        // non-product refusal carrying needs_more_photos true with a
+        // populated photo list). needs_more_photos /
+        // recommended_photos belong to the recognized flow; the
+        // explanation stays in rejection_reason / user_message,
+        // untouched.
+        if (p.needs_more_photos !== false ||
+            !Array.isArray(p.recommended_photos) || p.recommended_photos.length > 0) {
+          appliedGuards.push('rejection_normalize');
+        }
+        p.needs_more_photos = false;
+        p.recommended_photos = [];
       } else {
         // Consistency rules the model sometimes misses, enforced the same
         // way: if it asked for more photos, more photos are needed.
@@ -797,6 +817,7 @@ functions.http('analyzeProduct', async (req, res) => {
           // photo in the pack cannot support 60).
           p.confidence = Math.min(p.confidence, 55);
           appliedGuards.push('low_res_confidence_cap');
+          lowResCapFired = true;
         }
         // Round 3.8 guard — description consistency, decoupled from
         // guard 1: whenever the settled identification is the MacBook
@@ -946,7 +967,7 @@ functions.http('analyzeProduct', async (req, res) => {
             if (key === 'short_description' && typeof p[key] === 'string' &&
                 typeof p.photo_mismatch_warning === 'string' &&
                 p.photo_mismatch_warning.length > 0) {
-              p[key] = tidyText(p[key].replace(/\bvintage\b/gi, '').replace(/\bbeveled\b/gi, ''));
+              p[key] = tidyText(p[key].replace(/\bvintage\b/gi, '').replace(/\bbeveled\b/gi, '').replace(/\bbevelled\b/gi, ''));
             }
             if (p[key] !== before) scrubbed = true;
           }
@@ -1253,6 +1274,44 @@ functions.http('analyzeProduct', async (req, res) => {
           }
           if (stripFired) appliedGuards.push('non_ascii_strip');
         }
+        // Round 9 guard — variant in title: guard 6 promotes an
+        // edition into product_name and model, and into the title only
+        // when the title happens to contain the model base; with an
+        // empty or divergent model the title never gains it (round 8
+        // T3: name "Huawei FreeBuds 5 Supreme Edition", title "Huawei
+        // FreeBuds 5 Wireless Earbuds (Silver Frost)"). After all
+        // name/title processing, including the non-ASCII strip above,
+        // settle it here: if the edition in product_name is missing
+        // from the title, insert it immediately after the brand+model
+        // base when the title starts with that base, else before a
+        // trailing parenthesized colour segment, else at the end.
+        {
+          const nameStr = typeof p.product_name === 'string' ? p.product_name : '';
+          const titleStr = typeof p.suggested_title === 'string' ? p.suggested_title : '';
+          const parenEdition = nameStr.match(/\(([^()]*\bEdition)\)/i);
+          const bareEdition = nameStr.match(/\b((?:Supreme|Limited|Special|Anniversary|Signature|Collector's) Edition)\b/);
+          const edition = parenEdition ? parenEdition[1].trim() : (bareEdition ? bareEdition[1] : '');
+          if (edition && titleStr &&
+              !titleStr.toLowerCase().includes(edition.toLowerCase())) {
+            const base = tidyText(nameStr
+              .replace(`(${edition})`, '')
+              .replace(edition, '')
+              .replace(/\(\s*\)/g, ''));
+            let next = null;
+            if (base && titleStr.toLowerCase().startsWith(base.toLowerCase())) {
+              next = `${titleStr.slice(0, base.length)} ${edition}${titleStr.slice(base.length)}`;
+            } else if (/\s\([^()]*\)\s*$/.test(titleStr)) {
+              next = titleStr.replace(/\s(\([^()]*\))\s*$/, ` ${edition} $1`);
+            } else {
+              next = `${titleStr} ${edition}`;
+            }
+            next = tidyText(next);
+            if (next && next !== titleStr) {
+              p.suggested_title = next;
+              appliedGuards.push('variant_in_title');
+            }
+          }
+        }
         // Round 8 guard — photo prompt minimums: guard 4 backfills an
         // empty prompt list, but a NON-empty list can still omit the
         // one shot that resolves the item's value driver (Claude
@@ -1274,8 +1333,12 @@ functions.http('analyzeProduct', async (req, res) => {
           };
           const famName = `${p.product_family || ''} ${p.product_name || ''}`;
           if (p.category === 'Automotive') {
-            tryAppend(/odometer|mileage|interior/i,
-              'Take a photo of the odometer and the interior.');
+            // Round 9: the need check requires "odometer"
+            // specifically — round 8 T6 kept a touchscreen prompt
+            // that merely mentioned mileage, so the odometer shot
+            // itself was never requested (Claude round 8).
+            tryAppend(/odometer/i,
+              'Take a photo of the odometer showing the mileage.');
           }
           if (p.category === 'Electronics' || /macbook|laptop/i.test(famName)) {
             tryAppend(/box|label|spec/i,
@@ -1305,6 +1368,20 @@ functions.http('analyzeProduct', async (req, res) => {
             p.confidence > 60) {
           p.confidence = 60;
           appliedGuards.push('family_level_confidence_cap');
+        }
+        // Round 9 — low-resolution note: when guard 2 capped
+        // confidence because the photo is tiny, say so in
+        // user_message; a silent cap leaves the seller with no path
+        // to a better result (Claude round 8). Applied here, late, so
+        // the property-flow message for Real Estate is already
+        // settled and this appends after it instead of being replaced
+        // by it. The resolution check keeps it to a single append.
+        if (lowResCapFired) {
+          const resNote = 'The photo resolution is low, which limits the analysis; a clearer photo may improve accuracy.';
+          const um = typeof p.user_message === 'string' ? p.user_message : '';
+          if (!/resolution/i.test(um)) {
+            p.user_message = um.trim() ? `${um.trim()} ${resNote}` : resNote;
+          }
         }
         // Round 8 guard — condition by construction. Rounds 6-7
         // scrubbed condition CLAIMS phrase by phrase and the model
@@ -1352,16 +1429,77 @@ functions.http('analyzeProduct', async (req, res) => {
             /\bfully\s+functional\b/i,
           ];
           const TITLE_BOUNDED = 'appears in good condition in the photo';
+          // Round 9: clause-level cleanup inside exception-kept
+          // sentences. Round 8 T13 shipped "Cosmetically in fair
+          // condition with visible surface stains and signs of kitchen
+          // use; mechanical condition not assessed." — the sentence
+          // passed the defect exception as a whole, so its assessment
+          // clauses rode along with the defect clause. A kept sentence
+          // is now split on ";" and ", " boundaries: clauses carrying
+          // an assessment stem are dropped, clauses reporting a
+          // specific visible defect are kept, and when one clause
+          // carries both, the defect portion is salvaged from the
+          // last connector before the defect noun. If no clause
+          // survives, the sentence is dropped, as before.
+          const CLAUSE_ASSESSMENT = /\bcondition\b|cosmetically|well[-\s]maintained|mechanical condition|not assessed/i;
+          const clauseHasDefect = (c) => DEFECT_NOUN.test(c) && LOCATION_WORD.test(c);
+          const cleanKeptSentence = (sent) => {
+            const trailMatch = sent.match(/[.!?]+$/);
+            const trail = trailMatch ? trailMatch[0] : '.';
+            const core = trailMatch ? sent.slice(0, -trail.length) : sent;
+            const clauses = core.split(/\s*;\s*|\s*,\s+/)
+              .map((c) => c.trim()).filter((c) => c.length > 0);
+            if (clauses.length <= 1) return sent;
+            const keptClauses = [];
+            let changed = false;
+            for (const clause of clauses) {
+              const hasDefect = clauseHasDefect(clause);
+              const hasAssessment = CLAUSE_ASSESSMENT.test(clause);
+              if (hasDefect && !hasAssessment) { keptClauses.push(clause); continue; }
+              if (!hasDefect && hasAssessment) { changed = true; continue; }
+              if (hasDefect && hasAssessment) {
+                const defectIdx = clause.search(DEFECT_NOUN);
+                const head = clause.slice(0, defectIdx);
+                const connIdx = Math.max(
+                  head.lastIndexOf(' with '),
+                  head.lastIndexOf(' showing '),
+                  head.lastIndexOf(' has '));
+                if (connIdx >= 0) {
+                  const salvaged = clause.slice(connIdx)
+                    .replace(/^\s*(?:with|showing|has)\s+/i, '').trim();
+                  if (salvaged && clauseHasDefect(salvaged)) {
+                    keptClauses.push(salvaged);
+                    changed = true;
+                    continue;
+                  }
+                }
+                changed = true;
+                continue;
+              }
+              keptClauses.push(clause);
+            }
+            if (!changed) return sent;
+            if (keptClauses.length === 0) return '';
+            let joined = keptClauses.join('; ');
+            joined = joined.charAt(0).toUpperCase() + joined.slice(1);
+            return joined + trail;
+          };
           let condFired = false;
           // (a) Description: sentence-level strip.
           if (typeof p.short_description === 'string' && p.short_description.trim()) {
             const sentences = p.short_description.split(/(?<=[.!?])\s+/);
-            const kept = sentences.filter((sent) => {
-              if (!isConditionSentence(sent)) return true;
-              return DEFECT_NOUN.test(sent) && LOCATION_WORD.test(sent) &&
+            const kept = [];
+            let descChanged = false;
+            for (const sent of sentences) {
+              if (!isConditionSentence(sent)) { kept.push(sent); continue; }
+              const exception = DEFECT_NOUN.test(sent) && LOCATION_WORD.test(sent) &&
                 !STRONG_CLAIM.test(sent);
-            });
-            if (kept.length !== sentences.length) {
+              if (!exception) { descChanged = true; continue; }
+              const cleanedSent = cleanKeptSentence(sent);
+              if (cleanedSent !== sent) descChanged = true;
+              if (cleanedSent) kept.push(cleanedSent);
+            }
+            if (descChanged) {
               let text = tidyText(kept.join(' '));
               if (!text) {
                 text = `${p.product_name || p.product_family || 'Item'} shown in the photo.`;
