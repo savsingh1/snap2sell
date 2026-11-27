@@ -939,6 +939,15 @@ functions.http('analyzeProduct', async (req, res) => {
           for (const key of ['short_description', 'suggested_title']) {
             const before = p[key];
             p[key] = scrubDiagnostic(p[key]);
+            // Round 8: in a mismatched multi-photo set the model
+            // invents era/style specifics for the primary item (T8:
+            // "vintage", "beveled keycaps") — trim them on this same
+            // family-level laptop path.
+            if (key === 'short_description' && typeof p[key] === 'string' &&
+                typeof p.photo_mismatch_warning === 'string' &&
+                p.photo_mismatch_warning.length > 0) {
+              p[key] = tidyText(p[key].replace(/\bvintage\b/gi, '').replace(/\bbeveled\b/gi, ''));
+            }
             if (p[key] !== before) scrubbed = true;
           }
           if (scrubbed) appliedGuards.push('diagnostic_text_scrub');
@@ -1065,16 +1074,271 @@ functions.http('analyzeProduct', async (req, res) => {
         // Round 7 guards — the round 6 fix list, same pattern as
         // rounds 3.5-6: rules the graders found leaking through the
         // prompt alone are enforced deterministically here.
-        // Guard 11 — condition claim scrub (Claude round 6's top gap,
-        // ~11 of 14 tests): a photo cannot prove condition or function,
-        // so absolute claims in the free-text fields are bounded to
-        // what a photo can support — the first claim in a field is
-        // replaced with the bounded phrase, later ones are removed —
-        // and a superlative condition VALUE is mapped to a
-        // photo-bounded one. visible_damage is never touched: it
-        // reports what IS seen.
+        // Guard 11 (round 7 condition claim scrub) was superseded in
+        // round 8 by condition_by_construction at the end of this
+        // pipeline: phrase-level scrubbing kept missing the model's
+        // softer vocabulary, so condition is now handled by
+        // construction — see the last guard block below.
+        // Guard 12 — real-estate name clean: speculative architectural
+        // style hedges do not belong in the property name (T9 round 6:
+        // "Brick Split-Level / Multi-Storey Single-Family House" while
+        // the title used the plain form).
+        // Round 8 completion: the hedge family grows to the
+        // Multi-<layout word> forms (round 7 T9 came back
+        // "Multi-Level"); the plain family is settled when it merely
+        // duplicates the name; pure information requests move out of
+        // recommended_photos into requested_information; and a
+        // recognized property carries the property-flow message.
+        if (p.category === 'Real Estate') {
+          let reFired = false;
+          if (typeof p.product_name === 'string' && p.product_name) {
+            const HEDGES = /\b(?:split-level|multi-(?:storey|storeys|story|stories|level|levels|floor|floors))\b/gi;
+            const before = p.product_name;
+            let cleaned = tidyText(before.replace(HEDGES, '').replace(/\s*\/\s*/g, ' '));
+            if (cleaned.includes('/')) {
+              // Hedge removal left a dangling separator: align to the
+              // title's plain form when it carries one.
+              const title = typeof p.suggested_title === 'string' ? p.suggested_title : '';
+              const cleanTitle = tidyText(title.replace(HEDGES, '').replace(/\s*\/\s*/g, ' '));
+              if (cleanTitle && !cleanTitle.includes('/')) cleaned = cleanTitle;
+            }
+            if (cleaned && cleaned !== before) {
+              p.product_name = cleaned;
+              reFired = true;
+            }
+            // When the settled name is the plain "<Material>
+            // Single-Family House" form and the family merely
+            // duplicates the name, the family is the plain type.
+            if (/Single-Family House$/.test(p.product_name) &&
+                (p.product_family === before || p.product_family === p.product_name) &&
+                p.product_family !== 'Single-Family House') {
+              p.product_family = 'Single-Family House';
+              reFired = true;
+            }
+          }
+          // requested_information: the property flow asks for facts
+          // (address, square footage, year built) through
+          // recommended_photos, but those are not photos. Move pure
+          // information requests into their own additive field so the
+          // photo list stays a photo list. An entry that asks for a
+          // photo stays, whatever it depicts. The field is present
+          // (possibly empty) on every Real Estate result and absent
+          // elsewhere.
+          const INFO_REQUEST = /address|square footage|sq\.?\s?ft|year built|lot size|bedroom|bathroom count/i;
+          const movedInfo = [];
+          if (Array.isArray(p.recommended_photos)) {
+            const keptPhotos = [];
+            for (const entry of p.recommended_photos) {
+              if (typeof entry === 'string' && INFO_REQUEST.test(entry) &&
+                  !/photo|picture/i.test(entry) &&
+                  (/provide|confirm/i.test(entry) || !/\btake\b/i.test(entry))) {
+                movedInfo.push(entry);
+              } else {
+                keptPhotos.push(entry);
+              }
+            }
+            p.recommended_photos = keptPhotos;
+          }
+          p.requested_information = movedInfo;
+          if (movedInfo.length > 0) reFired = true;
+          // Property-flow message: a recognized property routes the
+          // user into the property flow explicitly instead of leaving
+          // user_message blank or generic (Claude round 7).
+          if (typeof p.user_message !== 'string' ||
+              !/address|property report/i.test(p.user_message)) {
+            const flowMsg = 'This looks like a property. Add the address and details to build the full property report.';
+            if (p.user_message !== flowMsg) {
+              p.user_message = flowMsg;
+              reFired = true;
+            }
+          }
+          if (reFired) appliedGuards.push('real_estate_name_clean');
+        }
+        // Guard 13 — product name normalize: the structured name must
+        // name the product family, not a colour or a near-miss variant
+        // (T1/T14 round 6: bullet blenders named "Personal Blender ..."
+        // and, in one run, just a colour, while the title said "Bullet
+        // Blender").
+        // Round 8 extension: the bullet-blender fix now covers the
+        // family and the title too (Claude round 7: the family still
+        // said "Personal Blender" and the T14 title dropped "Bullet"
+        // even when the name was right) — all three fields settle on
+        // the same name for the same item.
         {
-          const CONDITION_CLAIMS = [
+          const family = typeof p.product_family === 'string' ? p.product_family : '';
+          const sub = typeof p.subcategory === 'string' ? p.subcategory : '';
+          const brand = typeof p.brand === 'string' ? p.brand.trim() : '';
+          const withBrand = (base) => (brand && !/^unknown$/i.test(brand) &&
+            !base.toLowerCase().includes(brand.toLowerCase()))
+            ? `${brand} ${base}` : base;
+          let name = typeof p.product_name === 'string' ? p.product_name : '';
+          let normFired = false;
+          if (/bullet blender|personal blender/i.test(`${family} ${sub}`)) {
+            if (!/bullet/i.test(name)) {
+              const next = withBrand('Personal Bullet Blender');
+              if (next !== name) {
+                p.product_name = next;
+                name = next;
+                normFired = true;
+              }
+            }
+            if (p.product_family !== 'Personal Bullet Blender') {
+              p.product_family = 'Personal Bullet Blender';
+              normFired = true;
+            }
+          } else if (family) {
+            const tokens = (s) => new Set((s.toLowerCase().match(/[a-z]{4,}/g) || []));
+            const famTokens = tokens(family);
+            const shares = [...tokens(name)].some((t) => famTokens.has(t));
+            if (!shares) {
+              const next = withBrand(family);
+              if (next !== name) {
+                p.product_name = next;
+                name = next;
+                normFired = true;
+              }
+            }
+          }
+          // Title consistency: a bullet-blender title that lost the
+          // word "Bullet" is rebuilt from the settled name plus the
+          // distinguishing colour/material/size tokens the old title
+          // already carried — nothing new is invented.
+          if ((/bullet/i.test(name) || /bullet/i.test(p.product_family || '')) &&
+              typeof p.suggested_title === 'string' && p.suggested_title &&
+              !/bullet/i.test(p.suggested_title)) {
+            const TITLE_TOKENS = ['Stainless Steel', 'Space Gray', 'Space Grey',
+              'Silver', 'Black', 'White', 'Red', 'Blue', 'Gray', 'Grey', 'Chrome',
+              'Copper', 'Green', 'Pink', 'Purple', 'Gold', 'Glass', 'Compact',
+              'Mini', 'Portable', 'Cordless', 'Digital', 'Electric'];
+            const found = [];
+            for (const tok of TITLE_TOKENS) {
+              const m = p.suggested_title.match(new RegExp(`\\b${tok}\\b`, 'i'));
+              if (m && !name.toLowerCase().includes(tok.toLowerCase()) &&
+                  !found.some((f) => f.toLowerCase().includes(tok.toLowerCase()) ||
+                                     tok.toLowerCase().includes(f.toLowerCase()))) {
+                found.push(m[0]);
+              }
+              if (found.length >= 3) break;
+            }
+            let rebuilt = name;
+            while (found.length > 0) {
+              const candidate = `${name} - ${found.join(' ')}`;
+              if (candidate.length <= 80) { rebuilt = candidate; break; }
+              found.pop();
+            }
+            if (rebuilt !== p.suggested_title && rebuilt.length <= 80) {
+              p.suggested_title = rebuilt;
+              normFired = true;
+            }
+          }
+          if (normFired) appliedGuards.push('product_name_normalize');
+        }
+        // Round 8 guard — non-ASCII strip: placard text read off a
+        // photo can land in the structured fields in its original
+        // script (round 7 T3: the product name carried the Chinese
+        // edition name alongside the English one). Marketplace fields
+        // are English; strip non-ASCII characters and tidy the gaps
+        // and dangling separators they leave behind.
+        {
+          let stripFired = false;
+          for (const key of ['product_name', 'model', 'suggested_title']) {
+            if (typeof p[key] !== 'string' || !/[^\x20-\x7E]/.test(p[key])) continue;
+            const cleaned = tidyText(p[key].replace(/[^\x20-\x7E]/g, ''))
+              .replace(/\(\s+/g, '(').replace(/\s+\)/g, ')')
+              .replace(/^[\s\-/]+/, '').replace(/[\s\-/]+$/, '');
+            if (cleaned && cleaned !== p[key]) {
+              p[key] = cleaned;
+              stripFired = true;
+            }
+          }
+          if (stripFired) appliedGuards.push('non_ascii_strip');
+        }
+        // Round 8 guard — photo prompt minimums: guard 4 backfills an
+        // empty prompt list, but a NON-empty list can still omit the
+        // one shot that resolves the item's value driver (Claude
+        // round 7: odometer, box/spec-label, included-jars and
+        // brand-logo prompts kept getting dropped). Ensure each
+        // applicable category need is represented in the final list;
+        // append at most two prompts per result. Real Estate is
+        // excluded — its flow collects the address and property
+        // details through requested_information instead.
+        if (p.category !== 'Real Estate') {
+          if (!Array.isArray(p.recommended_photos)) p.recommended_photos = [];
+          const prompts = p.recommended_photos;
+          const promptHas = (re) => prompts.some((e) => typeof e === 'string' && re.test(e));
+          let appended = 0;
+          const tryAppend = (need, text) => {
+            if (appended >= 2 || promptHas(need)) return;
+            prompts.push(text);
+            appended++;
+          };
+          const famName = `${p.product_family || ''} ${p.product_name || ''}`;
+          if (p.category === 'Automotive') {
+            tryAppend(/odometer|mileage|interior/i,
+              'Take a photo of the odometer and the interior.');
+          }
+          if (p.category === 'Electronics' || /macbook|laptop/i.test(famName)) {
+            tryAppend(/box|label|spec/i,
+              'Take a photo of the original box or the spec label if you have it.');
+          }
+          if (/mixer|grinder|blender/i.test(famName)) {
+            tryAppend(/jar|accessor|attachment|logo|label/i,
+              'Take a photo of all jars and accessories included, and of the brand logo.');
+          }
+          const brandStr = typeof p.brand === 'string' ? p.brand.trim() : '';
+          if (!brandStr || /^unknown$/i.test(brandStr)) {
+            tryAppend(/logo|label|brand/i,
+              'Take a close-up photo of the brand logo or label.');
+          }
+          if (appended > 0) {
+            p.needs_more_photos = true;
+            appliedGuards.push('photo_prompt_minimums');
+          }
+        }
+        // Round 8 guard — family-level laptop confidence cap: a
+        // family-level laptop identification rests on a photo that
+        // cannot show the value drivers (spec label, About screen),
+        // so a confidence of 70 overstates it (Claude round 7: T7/T8
+        // belong at 55-60). Cap at 60; this guard never raises.
+        if (p.identification_level === 'product_family' &&
+            /macbook|laptop|notebook/i.test(`${p.product_family || ''} ${p.product_name || ''}`) &&
+            p.confidence > 60) {
+          p.confidence = 60;
+          appliedGuards.push('family_level_confidence_cap');
+        }
+        // Round 8 guard — condition by construction. Rounds 6-7
+        // scrubbed condition CLAIMS phrase by phrase and the model
+        // kept finding softer vocabulary ("appears to be in good
+        // cosmetic condition", "well-maintained", "appears clean").
+        // The mechanism changes: condition prose is removed by
+        // construction — every condition-assessment sentence leaves
+        // the description, with one narrow exception for a sentence
+        // whose only such content is a specific visible defect at a
+        // named location (that defect also lives in visible_damage,
+        // so no fact is lost either way) — and the condition FIELD is
+        // derived solely from visible_damage. This block runs last
+        // and is the ONLY writer of the condition field. Real Estate
+        // keeps its existing condition handling.
+        {
+          const DEFECT_NOUN = /\b(?:cracks?|chips?|tears?|stains?|dents?|scratch(?:es|ed)?|scuffs?|missing|broken|bent)\b/i;
+          const LOCATION_WORD = /\b(?:corner|edge|screen|side|top|bottom|left|right|surface|door|shelf|handle|key|button|leg|wheel)\b/i;
+          const STRONG_CLAIM = /\bexcellent\b|\bperfect\b|\bpristine\b|\blike[-\s]new\b|\bmint\b|\bgood\s+(?:cosmetic\s+|overall\s+)?condition\b|\bin\s+good\s+condition\b|\bfully functional\b|\bworks perfectly\b/i;
+          const isConditionSentence = (s) => {
+            if (/\bcondition\b|\bwear\b|\bwell[-\s]maintained\b|\bmaintained\b|\bcosmetic|\bscratch|\bscuff|\bdent|\bdamage|\bgood shape\b|\bworking order\b|\bfully functional\b|\bworks perfectly\b|\bpristine\b|\blike[-\s]new\b/i.test(s)) return true;
+            if (/\bmint\b/i.test(s) &&
+                !/\bmint\s+(?:green|chip|chocolate|flavou?r|tea|leaf|leaves)\b/i.test(s)) return true;
+            if (/\bclean\b/i.test(s) &&
+                (/\b(?:appears|looks|exterior|interior|overall)\b/i.test(s) || /\bis in\b/i.test(s))) return true;
+            return false;
+          };
+          const visibleDamageHasDefect = (vd) => {
+            const NONE_LIKE = /^(?:none|n\/a|na|nil|nothing|none\s+visible|no\s+(?:visible\s+)?(?:damage|defects?|scratches|scuffs|dents|wear|marks|issues?)|not\s+(?:visible|assessed))[.\s]*$/i;
+            const items = Array.isArray(vd) ? vd
+              : (typeof vd === 'string' && vd.trim() ? [vd] : []);
+            return items.some((x) => typeof x === 'string' &&
+              x.trim().length > 0 && !NONE_LIKE.test(x.trim()));
+          };
+          const TITLE_CLAIMS = [
             /\b(?:is|looks|appears|seems)\s+in\s+(?:excellent|perfect|mint|like[-\s]new)\s+condition\b/i,
             /\b(?:is|looks|appears|seems)\s+(?:fully\s+functional|pristine|like[-\s]new)\b/i,
             /\bin\s+(?:excellent|perfect|mint|like[-\s]new)\s+condition\b/i,
@@ -1087,89 +1351,61 @@ functions.http('analyzeProduct', async (req, res) => {
             /\bworks\s+perfectly\b/i,
             /\bfully\s+functional\b/i,
           ];
-          const BOUNDED = 'appears in good condition in the photo';
-          const scrubClaims = (s) => {
-            if (typeof s !== 'string' || !s) return s;
-            let out = s;
+          const TITLE_BOUNDED = 'appears in good condition in the photo';
+          let condFired = false;
+          // (a) Description: sentence-level strip.
+          if (typeof p.short_description === 'string' && p.short_description.trim()) {
+            const sentences = p.short_description.split(/(?<=[.!?])\s+/);
+            const kept = sentences.filter((sent) => {
+              if (!isConditionSentence(sent)) return true;
+              return DEFECT_NOUN.test(sent) && LOCATION_WORD.test(sent) &&
+                !STRONG_CLAIM.test(sent);
+            });
+            if (kept.length !== sentences.length) {
+              let text = tidyText(kept.join(' '));
+              if (!text) {
+                text = `${p.product_name || p.product_family || 'Item'} shown in the photo.`;
+              }
+              p.short_description = text;
+              condFired = true;
+            }
+          }
+          // (c) Title: bounded replacement of condition claims, as
+          // round 7 handled titles.
+          if (typeof p.suggested_title === 'string' && p.suggested_title) {
+            let out = p.suggested_title;
             let replaced = false;
-            for (const re of CONDITION_CLAIMS) {
+            for (const re of TITLE_CLAIMS) {
               out = out.replace(new RegExp(re.source, 'gi'), (m) => {
                 if (replaced) return '';
                 replaced = true;
                 return /^[A-Z]/.test(m)
-                  ? BOUNDED.charAt(0).toUpperCase() + BOUNDED.slice(1)
-                  : BOUNDED;
+                  ? TITLE_BOUNDED.charAt(0).toUpperCase() + TITLE_BOUNDED.slice(1)
+                  : TITLE_BOUNDED;
               });
             }
-            if (!replaced) return out;
-            // Tidy the gaps left by removed claims: dangling
-            // connectors before punctuation and stub sentences.
-            out = out
-              .replace(/\s+(?:with|and|or|but)\s+([.,;])/gi, '$1')
-              .replace(/(^|[.!?]\s+)(?:It|This|That)\s*[.,;]\s*/g, '$1');
-            return tidyText(out);
-          };
-          let condFired = false;
-          for (const key of ['short_description', 'suggested_title']) {
-            const before = p[key];
-            p[key] = scrubClaims(p[key]);
-            if (p[key] !== before) condFired = true;
+            if (replaced) {
+              out = tidyText(out
+                .replace(/\s+(?:with|and|or|but)\s+([.,;])/gi, '$1')
+                .replace(/(^|[.!?]\s+)(?:It|This|That)\s*[.,;]\s*/g, '$1'));
+              if (out !== p.suggested_title) {
+                p.suggested_title = out;
+                condFired = true;
+              }
+            }
           }
-          if (typeof p.condition === 'string' &&
-              /^(?:like\s?new|excellent|mint|pristine|perfect)$/i.test(p.condition.trim())) {
-            p.condition = 'Good (from photo)';
-            condFired = true;
+          // (b) Condition field: derived solely from visible_damage,
+          // after all other processing.
+          if (p.category !== 'Real Estate') {
+            const nextCondition = visibleDamageHasDefect(p.visible_damage)
+              ? 'Used - visible wear noted in photos'
+              : 'Not assessed from photo';
+            if (p.condition !== nextCondition) {
+              p.condition = nextCondition;
+              condFired = true;
+            }
           }
-          if (condFired) appliedGuards.push('condition_claim_scrub');
-        }
-        // Guard 12 — real-estate name clean: speculative architectural
-        // style hedges do not belong in the property name (T9 round 6:
-        // "Brick Split-Level / Multi-Storey Single-Family House" while
-        // the title used the plain form).
-        if (p.category === 'Real Estate' && typeof p.product_name === 'string' &&
-            p.product_name) {
-          const HEDGES = /\b(?:split-level|multi-storey|multi-story)\b/gi;
-          const before = p.product_name;
-          let cleaned = tidyText(before.replace(HEDGES, '').replace(/\s*\/\s*/g, ' '));
-          if (cleaned.includes('/')) {
-            // Hedge removal left a dangling separator: align to the
-            // title's plain form when it carries one.
-            const title = typeof p.suggested_title === 'string' ? p.suggested_title : '';
-            const cleanTitle = tidyText(title.replace(HEDGES, '').replace(/\s*\/\s*/g, ' '));
-            if (cleanTitle && !cleanTitle.includes('/')) cleaned = cleanTitle;
-          }
-          if (cleaned && cleaned !== before) {
-            p.product_name = cleaned;
-            appliedGuards.push('real_estate_name_clean');
-          }
-        }
-        // Guard 13 — product name normalize: the structured name must
-        // name the product family, not a colour or a near-miss variant
-        // (T1/T14 round 6: bullet blenders named "Personal Blender ..."
-        // and, in one run, just a colour, while the title said "Bullet
-        // Blender").
-        {
-          const family = typeof p.product_family === 'string' ? p.product_family : '';
-          const sub = typeof p.subcategory === 'string' ? p.subcategory : '';
-          const brand = typeof p.brand === 'string' ? p.brand.trim() : '';
-          const withBrand = (base) => (brand && !/^unknown$/i.test(brand) &&
-            !base.toLowerCase().includes(brand.toLowerCase()))
-            ? `${brand} ${base}` : base;
-          const name = typeof p.product_name === 'string' ? p.product_name : '';
-          let next = null;
-          if (/bullet blender|personal blender/i.test(`${family} ${sub}`) &&
-              !/bullet/i.test(name)) {
-            next = withBrand('Personal Bullet Blender');
-          } else if (family) {
-            const tokens = (s) => new Set((s.toLowerCase().match(/[a-z]{4,}/g) || []));
-            const famTokens = tokens(family);
-            const shares = [...tokens(name)].some((t) => famTokens.has(t));
-            if (!shares) next = withBrand(family);
-          }
-          if (next && next !== name) {
-            p.product_name = next;
-            appliedGuards.push('product_name_normalize');
-          }
+          if (condFired) appliedGuards.push('condition_by_construction');
         }
       }
     }
