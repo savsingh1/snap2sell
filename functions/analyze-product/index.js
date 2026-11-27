@@ -635,7 +635,7 @@ functions.http('analyzeProduct', async (req, res) => {
             recognized: false,
             brand: '', model: '', product_name: '', product_family: '',
             category: 'Miscellaneous', subcategory: '', color: '',
-            condition: '', confidence: 0, identification_level: '',
+            condition: '', confidence: 0, identification_level: 'none',
             needs_more_photos: true, needs_more_information: false,
             price_low: 0, price_high: 0, suggested_price: 0,
             included_accessories: [], missing_parts: [], visible_damage: [],
@@ -728,8 +728,11 @@ functions.http('analyzeProduct', async (req, res) => {
         if (typeof p.user_message !== 'string' || !p.user_message.trim()) {
           p.user_message = 'We could not identify a product in that photo. Try a clear, well-lit photo of the item on its own.';
         }
-        // A rejection carries no identification at all.
-        p.identification_level = '';
+        // A rejection carries no identification at all. Round 6: the
+        // field stays present with the explicit value 'none' so the
+        // schema is consistent across outcomes (Gemini and Claude both
+        // prescribed this in round 5).
+        p.identification_level = 'none';
       } else {
         // Consistency rules the model sometimes misses, enforced the same
         // way: if it asked for more photos, more photos are needed.
@@ -788,7 +791,9 @@ functions.http('analyzeProduct', async (req, res) => {
         // carry high confidence (a 403x403 unbranded fridge was rated 70
         // in rounds 2-3). Cap it from the measured original image size.
         if (!p.brand && maxOriginalEdge != null && maxOriginalEdge <= 640) {
-          p.confidence = Math.min(p.confidence, 60);
+          // Round 6: cap tightened 60 -> 55 (Claude round 5: the weakest
+          // photo in the pack cannot support 60).
+          p.confidence = Math.min(p.confidence, 55);
           appliedGuards.push('low_res_confidence_cap');
         }
         // Round 3.8 guard — description consistency, decoupled from
@@ -860,6 +865,117 @@ functions.http('analyzeProduct', async (req, res) => {
           ];
           p.needs_more_photos = true;
           appliedGuards.push('photo_prompts_backfill');
+        }
+        // Round 6 guards — Claude round 5 diagnosis: at the reduced
+        // thinking level the prompt rules alone no longer hold; every
+        // critical was a prompt-only rule leaking. These guards move the
+        // surviving rules into deterministic server-side code, the same
+        // pattern as guards 1-4.
+        const tidyText = (s) => typeof s === 'string'
+          ? s.replace(/\s{2,}/g, ' ').replace(/\s+([.,;])/g, '$1').trim() : s;
+        // Guard 5 — diagnostic text scrub: at parent-family level a
+        // laptop description may not carry sub-family-diagnostic
+        // specifics (port counts, wedge/tapered chassis shapes) that
+        // steer Air vs Pro when the photo cannot settle it (T7/T8
+        // criticals).
+        if (p.identification_level === 'product_family' &&
+            /macbook|laptop/i.test(`${p.product_name || ''} ${p.product_family || ''}`)) {
+          const scrubDiagnostic = (s) => {
+            if (typeof s !== 'string') return s;
+            let out = s
+              .replace(/\b(two|three|four|five|\d+)\s+(USB-C\/Thunderbolt|USB-C|Thunderbolt|USB)\s+ports?\b/gi, 'USB-C/Thunderbolt ports')
+              .replace(/\btapered wedge\b/gi, 'aluminum')
+              .replace(/\bwedge-style\b/gi, '')
+              .replace(/\bwedge-shaped\b/gi, '')
+              .replace(/\bwedge\b/gi, '');
+            return tidyText(out);
+          };
+          let scrubbed = false;
+          for (const key of ['short_description', 'suggested_title']) {
+            const before = p[key];
+            p[key] = scrubDiagnostic(p[key]);
+            if (p[key] !== before) scrubbed = true;
+          }
+          if (scrubbed) appliedGuards.push('diagnostic_text_scrub');
+        }
+        // Guard 6 — variant promotion: an edition named in the
+        // description (read off a placard or label) belongs in the
+        // structured fields and the title, not only in prose (T3
+        // critical: "Supreme Edition" survived only in the description).
+        {
+          const editionMatch = `${p.short_description || ''} ${p.suggested_title || ''}`
+            .match(/\b(Supreme|Limited|Special|Anniversary|Signature|Collector's) Edition\b/);
+          if (editionMatch) {
+            const edition = editionMatch[0];
+            let promoted = false;
+            if (p.product_name && !p.product_name.includes(edition)) {
+              p.product_name = `${p.product_name} ${edition}`;
+              promoted = true;
+            }
+            if (typeof p.model === 'string' && p.model && !p.model.includes(edition)) {
+              p.model = `${p.model} ${edition}`;
+              promoted = true;
+            }
+            if (typeof p.suggested_title === 'string' && p.suggested_title &&
+                !p.suggested_title.includes(edition)) {
+              const base = (typeof p.model === 'string' && p.model)
+                ? p.model.replace(` ${edition}`, '') : '';
+              if (base && p.suggested_title.includes(base)) {
+                p.suggested_title = p.suggested_title.replace(base, `${base} ${edition}`);
+                promoted = true;
+              }
+            }
+            if (promoted) appliedGuards.push('variant_promotion');
+          }
+        }
+        // Guard 7 — display-unit flag: a product photographed on a
+        // retail display is not yet a listing; flag it structurally and
+        // require the missing information instead of letting seller
+        // instructions sit in buyer-facing prose (T3 critical).
+        if (/retail display|security tether|anti-theft|display stand/i.test(p.short_description || '')) {
+          p.display_unit_warning = 'Photographed on a retail display. Confirm the actual unit for sale and what is included (packaging, cables, accessories) before listing.';
+          p.needs_more_information = true;
+          appliedGuards.push('display_unit_flag');
+        }
+        // Guard 8 — plate text scrub: never publish a transcribed
+        // registration plate; the model renders vanity plates as the
+        // words they spell instead of the characters shown (T5, flagged
+        // by all three graders). Remove quoted plate text from
+        // automotive descriptions.
+        if (p.category === 'Automotive' && typeof p.short_description === 'string') {
+          const before = p.short_description;
+          let out = before
+            .replace(/registration plate\s*'[^']*'/gi, 'registration plate')
+            .replace(/plate\s*'[^']*'/gi, 'plate')
+            .replace(/'([A-Z0-9][A-Z0-9 ]{2,9})'/g, (m, inner) => /\d/.test(inner) ? '' : m);
+          out = tidyText(out);
+          if (out !== before) {
+            p.short_description = out;
+            appliedGuards.push('plate_text_scrub');
+          }
+        }
+        // Guard 9 — mismatch note: when the photos show different items
+        // the description itself must say so plainly, not only the
+        // warning field (T8).
+        if (typeof p.photo_mismatch_warning === 'string' && p.photo_mismatch_warning.length > 0 &&
+            typeof p.short_description === 'string' &&
+            !/different (item|laptop|unit|computer|device)/i.test(p.short_description)) {
+          p.short_description = `${p.short_description} Note: the photos appear to show different items; confirm which item is being sold.`;
+          appliedGuards.push('mismatch_note_append');
+        }
+        // Guard 10 — product family backfill: a recognized item always
+        // carries its family; the model occasionally omits the field
+        // (T4 lost product_family in round 5).
+        if ((typeof p.product_family !== 'string' || !p.product_family) && p.product_name) {
+          p.product_family = p.product_name;
+          appliedGuards.push('product_family_backfill');
+        }
+        // Real-estate confidence cap: an exterior photo with no address
+        // or interior evidence cannot carry 90 (T9 drifted to 90 in
+        // round 5).
+        if (p.category === 'Real Estate' && p.confidence > 85) {
+          p.confidence = 85;
+          appliedGuards.push('real_estate_confidence_cap');
         }
       }
     }
