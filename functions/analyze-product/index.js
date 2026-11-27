@@ -1450,13 +1450,22 @@ functions.http('analyzeProduct', async (req, res) => {
         // support). The same invented characterizations come out of
         // photo_mismatch_warning; the factual content (silver
         // keyboard, German QWERTZ layout, different device) stays.
+        // Round 12: "older" comes out too — an age guess about the
+        // second unit is the same class of claim (round 11 T8: "a
+        // completely different or older laptop model"). The phrase
+        // forms go before the bare word so the sentence keeps its
+        // grammar ("different or older" -> "different", "an older"
+        // -> "a").
         if (typeof p.photo_mismatch_warning === 'string' && p.photo_mismatch_warning) {
           const beforeWarn = p.photo_mismatch_warning;
           const nextWarn = tidyText(beforeWarn
             .replace(/\bvintage\s+or\s+non-?apple\b/gi, '')
             .replace(/\bnon-?apple\b/gi, '')
             .replace(/\bvintage\b/gi, '')
-            .replace(/\bsculpted\b/gi, ''));
+            .replace(/\bsculpted\b/gi, '')
+            .replace(/\ban\s+older\b/gi, 'a')
+            .replace(/\bor\s+older\b/gi, '')
+            .replace(/\bolder\b/gi, ''));
           if (nextWarn !== beforeWarn) {
             p.photo_mismatch_warning = nextWarn;
             appliedGuards.push('mismatch_descriptor_scrub');
@@ -1513,12 +1522,20 @@ functions.http('analyzeProduct', async (req, res) => {
         // the "light surface scuffs and wear" form) is dropped even
         // when it names a part, and none-like entries go too — the
         // buyer-facing list either names a real defect or is empty.
+        // Round 12 tightening (Claude T1/T14): the weak-word-plus-
+        // part allowance still let the invented line through in a
+        // shorter form — "Light cosmetic scuffs on plastic cups" —
+        // and a named part does not make a generic wear word a
+        // visible defect. The allowance is gone: an entry now
+        // survives ONLY on a strong defect noun (the round 10 set,
+        // plus the round 12 additions: rusted, burned, mould, mold,
+        // scratch/scratches/scratched, damage/damaged). Weak-only
+        // entries ("Wear along seams and branding label") drop even
+        // with a named part; condition derivation downstream keeps
+        // reading the filtered list, so a fully filtered list still
+        // yields "Not assessed from photo".
         {
-          const STRONG_DEFECT = /\b(?:cracks?|cracked|chips?|chipped|tears?|torn|stains?|stained|staining|dents?|dented|yellowing|yellowed|discolou?ration|discolou?red|rust|rusty|corrosion|corroded|missing|broken|bent|burns?|burnt|scorch(?:ed)?|holes?|peeling|peeled|faded|fading|grime|grimy|residue|soiling|soiled|warped|leaks?|leaking|gouges?|pitting|pitted)\b/i;
-          const WEAK_DEFECT = /\b(?:scuffs?|scuffed|scratch(?:es|ed)?|marks?|smudges?|wear|scrapes?|scraped|dings?|blemish(?:es)?)\b/i;
-          const HARD_GENERIC = /\bcosmetic wear\b|\bconsistent with\b|\bsigns? of (?:kitchen )?use\b|\bnormal wear\b|\bgeneral wear\b/i;
-          const STOCK_WEAR = /\b(?:light|minor)\s+(?:surface\s+)?(?:scuffs?|scratches|marks)\s+and\s+wear\b/i;
-          const PART_NOUN = /\b(?:doors?|handles?|hinges?|corners?|edges?|screen|lids?|base|seams?|shelf|shelves|buttons?|wheels?|legs?|tops?|bottoms?|sides?|housing|collar|jars?|cups?|keyboard|frame|panels?|grilles?|neck|exterior|interior|underside|rim|bezel|dials?|knobs?|drawers?|gasket|spout|blades?)\b/i;
+          const STRONG_DEFECT = /\b(?:cracks?|cracked|chips?|chipped|dents?|dented|stains?|stained|staining|tears?|torn|rips?|ripped|yellowing|yellowed|discolou?ration|discolou?red|grime|grimy|rust|rusty|rusted|corrosion|corroded|missing|broken|bent|burns?|burned|burnt|scorch(?:ed)?|holes?|peeling|peeled|faded|fading|residue|soiling|soiled|warped|leaks?|leaking|gouges?|pitting|pitted|mould|mold|scratch(?:es|ed)?|damaged?)\b/i;
           const NONE_LIKE_DAMAGE = /^(?:none|n\/a|na|nil|nothing|none\s+visible|no\s+(?:visible\s+)?(?:damage|defects?|scratches|scuffs|dents|wear|marks|issues?)|not\s+(?:visible|assessed))[.\s]*$/i;
           const rawDamage = Array.isArray(p.visible_damage) ? p.visible_damage
             : (typeof p.visible_damage === 'string' && p.visible_damage.trim() ? [p.visible_damage] : []);
@@ -1526,9 +1543,7 @@ functions.http('analyzeProduct', async (req, res) => {
             if (typeof entry !== 'string') return false;
             const t = entry.trim();
             if (!t || NONE_LIKE_DAMAGE.test(t)) return false;
-            if (STRONG_DEFECT.test(t)) return true;
-            if (HARD_GENERIC.test(t) || STOCK_WEAR.test(t)) return false;
-            return WEAK_DEFECT.test(t) && PART_NOUN.test(t);
+            return STRONG_DEFECT.test(t);
           });
           if (JSON.stringify(keptDamage) !== JSON.stringify(rawDamage)) {
             p.visible_damage = keptDamage;
@@ -1865,6 +1880,149 @@ functions.http('analyzeProduct', async (req, res) => {
             appliedGuards.push('property_condition_normalize');
           }
           if (condFired) appliedGuards.push('condition_by_construction');
+        }
+        // Round 12 guards — Claude round 11 (FAIL 8.57, zero
+        // criticals) confirmed the round 11 fixes landed and docked
+        // what remained: a layout speculation leading the house
+        // description, name/title qualifier drift on two tests, a
+        // seller instruction still leading the T3 description, three
+        // dropped category prompt minimums, and the still-missing
+        // plain statement that a family-level laptop's exact model
+        // is unknown. Same pattern as rounds 3.5-11: deterministic
+        // server-side code. This block runs after
+        // condition_by_construction, the last writer of the
+        // condition field, so nothing here can disturb it.
+        // Guard — property layout scrub: guard 12 strips speculative
+        // layout hedges from the property NAME, but the same claim
+        // can lead the description (round 11 T9: "Multi-level or
+        // split-level single-family home featuring..."). An exterior
+        // photo does not establish the interior layout. Only a
+        // LEADING phrase on a Real Estate result is removed;
+        // mid-text mentions and other categories are untouched.
+        if (p.category === 'Real Estate' &&
+            typeof p.short_description === 'string' && p.short_description.trim()) {
+          const LAYOUT_LEAD = /^(?:multi-level\s+or\s+split-level|split-level\s+or\s+multi-level)\s+/i;
+          if (LAYOUT_LEAD.test(p.short_description)) {
+            const rest = p.short_description.replace(LAYOUT_LEAD, '');
+            p.short_description = rest.charAt(0).toUpperCase() + rest.slice(1);
+            appliedGuards.push('property_layout_scrub');
+          }
+        }
+        // Guard — name/title qualifier sync: the model drops a
+        // qualifier from the structured name while keeping it in
+        // the title, so the two fields disagree (round 11 T2: name
+        // "Dosilet Conveyor Toaster", title "Dosilet Commercial
+        // Conveyor Toaster"; T5: name "Volkswagen Golf R32", title
+        // "Volkswagen Golf R32 (Mk4) ..."). Two narrow repairs, both
+        // keyed on the title the model itself wrote: a generation
+        // marker directly after the name is appended to the name,
+        // and a "Commercial" the title carries inside an otherwise
+        // identical name segment is adopted. The name is never
+        // truncated or rewritten beyond these two repairs.
+        {
+          const nameStr = typeof p.product_name === 'string' ? p.product_name.trim() : '';
+          const titleStr = (typeof p.suggested_title === 'string' && p.suggested_title)
+            ? p.suggested_title
+            : (typeof p.title === 'string' ? p.title : '');
+          if (nameStr && titleStr && titleStr !== nameStr) {
+            const escName = nameStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const genMatch = titleStr.match(new RegExp(`^${escName}\\s+\\((Mk\\d+|Gen \\d+|Series \\d+)\\)`, 'i'));
+            if (genMatch && !nameStr.toLowerCase().includes(`(${genMatch[1].toLowerCase()})`)) {
+              p.product_name = `${nameStr} (${genMatch[1]})`;
+              appliedGuards.push('name_title_qualifier_sync');
+            } else if (!/commercial/i.test(nameStr)) {
+              const segment = titleStr.split(' - ')[0].trim();
+              const stripped = segment
+                .replace(/\s+commercial\s+/gi, ' ')
+                .replace(/^commercial\s+/gi, '')
+                .replace(/\s{2,}/g, ' ').trim();
+              if (segment !== nameStr &&
+                  stripped.toLowerCase() === nameStr.toLowerCase()) {
+                p.product_name = segment;
+                appliedGuards.push('name_title_qualifier_sync');
+              }
+            }
+          }
+        }
+        // Guard — seller instruction strip: guard 7 flags a retail
+        // display unit structurally, but the model still leads the
+        // buyer-facing description with an instruction to the
+        // SELLER (round 11 T3: "Photographed on a retail display —
+        // confirm whether this is the actual unit for sale."). When
+        // the display warning is present, that first sentence is
+        // the warning's content duplicated as prose; it comes out.
+        // Only the first sentence, only with the warning present,
+        // and only when a real description sentence remains.
+        if (typeof p.display_unit_warning === 'string' && p.display_unit_warning.trim() &&
+            typeof p.short_description === 'string' && p.short_description.trim()) {
+          const sentences = p.short_description.split(/(?<=[.!?])\s+/);
+          if (sentences.length > 1 && /confirm whether/i.test(sentences[0])) {
+            const nextDesc = tidyText(sentences.slice(1).join(' '));
+            if (nextDesc) {
+              p.short_description = nextDesc;
+              appliedGuards.push('seller_instruction_strip');
+            }
+          }
+        }
+        // Guard — prompt minimums, round 12: the round 8 minimums
+        // check broad need patterns (a "label" prompt satisfies the
+        // brand need; a touchscreen VIN prompt satisfies the
+        // automotive need), so three specific shots kept vanishing
+        // (round 11: T4 lost the brand-logo close-up behind a
+        // model/serial LABEL prompt, T6 lost the door-jamb VIN
+        // sticker shot behind a touchscreen prompt, T13 lost the
+        // additional-jars shot behind a logo prompt). Each rule
+        // appends its shot only when no existing prompt names the
+        // specific subject; appends go at the end, existing order
+        // preserved, and needs_more_photos follows the round 8
+        // convention when a shot is added.
+        if (p.category !== 'Real Estate') {
+          if (!Array.isArray(p.recommended_photos)) p.recommended_photos = [];
+          const prompts12 = p.recommended_photos;
+          const promptMentions12 = (re) => prompts12.some((e) => typeof e === 'string' && re.test(e));
+          let appended12 = 0;
+          const famName12 = `${p.product_family || ''} ${p.product_name || ''}`;
+          const brandStr12 = typeof p.brand === 'string' ? p.brand.trim() : '';
+          if ((!brandStr12 || /^unknown$/i.test(brandStr12)) &&
+              !promptMentions12(/logo|brand/i) &&
+              (/appliance/i.test(p.category || '') ||
+               /refrigerator|fridge|washer|dryer|dishwasher|oven|stove|freezer/i.test(famName12))) {
+            prompts12.push('Take a close-up photo of the brand logo on the front of the unit.');
+            appended12++;
+          }
+          if (p.category === 'Automotive' && !promptMentions12(/door|jamb|sticker/i)) {
+            prompts12.push('Take a photo of the VIN sticker on the driver door jamb.');
+            appended12++;
+          }
+          if (/mixer grinder/i.test(famName12) && !promptMentions12(/jar/i)) {
+            prompts12.push('Take a photo of any additional jars and lids included with the unit.');
+            appended12++;
+          }
+          if (appended12 > 0) {
+            p.needs_more_photos = true;
+            appliedGuards.push('prompt_minimums_round12');
+          }
+        }
+        // Guard — sub-family unknown statement: the settled
+        // parent-family laptop result never says in prose that the
+        // exact model is undetermined (Claude rounds 10 and 11,
+        // T7) — the description lists unknown SPECS while the buyer
+        // is left to assume the model itself is settled. Using the
+        // round 3.8 signal (MacBook parent family, no model on
+        // record), the description gains the plain statement,
+        // unless it already says the model or sub-family is
+        // unknown.
+        if (!p.model && (p.product_family === 'MacBook' || p.product_name === 'Apple MacBook') &&
+            typeof p.short_description === 'string' && p.short_description.trim()) {
+          const desc7 = p.short_description;
+          const alreadyStated7 = /\bmodel\b[^.!?]{0,60}\bunknown\b/i.test(desc7) ||
+            /\bsub-?family\b[^.!?]{0,60}\bunknown\b/i.test(desc7) ||
+            /\bunknown\b[^.!?]{0,30}\bmodel\b/i.test(desc7) ||
+            /cannot be determined/i.test(desc7) || /can'?t be told/i.test(desc7);
+          if (!alreadyStated7) {
+            p.short_description = `${desc7.trim()} The exact model cannot be determined from the photo.`;
+            appliedGuards.push('subfamily_unknown_statement');
+          }
         }
       }
     }
