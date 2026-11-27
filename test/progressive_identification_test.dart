@@ -457,8 +457,13 @@ void main() {
   });
 
   group('brand gate does not leak to other products', () {
-    test('Volkswagen asking for more photos still gets the clearer-photo ask',
-        () async {
+    test(
+        'Volkswagen asking for more photos: listing continues, but with no '
+        'progressive treatment', () async {
+      // Round 7 contract: needs_more_photos alone no longer blocks a
+      // recognized, confident result — for ANY brand. What must not
+      // leak outside Apple/Tesla is the progressive treatment itself:
+      // no partial-identification notice and no family pricing tier.
       final id = _simpleVehicle('Volkswagen', 'Golf', '', 88,
           low: 8500, high: 10500, suggested: 9500)
         ..['needs_more_photos'] = true
@@ -466,11 +471,12 @@ void main() {
       final service =
           serviceWith(MockClient((_) async => jsonResponse(id, 200)));
 
-      final err =
-          await _captureError(() => service.analyzeItem(makeTestJpeg()));
+      final result = await service.analyzeItem(makeTestJpeg());
 
-      expect(err, isNotNull);
-      expect(err!.category, AiErrorCategory.lowConfidence);
+      expect(result.title, 'Volkswagen Golf');
+      expect(result.suggestedPrice, 9500);
+      expect(result.partialNotice, isNull);
+      expect(result.pricingTier, 1); // normal tier, not a family tier
     });
 
     test('non-Apple/Tesla weak result: no partial notice, no tier change',
