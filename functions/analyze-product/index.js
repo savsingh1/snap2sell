@@ -872,7 +872,7 @@ functions.http('analyzeProduct', async (req, res) => {
         // surviving rules into deterministic server-side code, the same
         // pattern as guards 1-4.
         const tidyText = (s) => typeof s === 'string'
-          ? s.replace(/\s{2,}/g, ' ').replace(/\s+([.,;])/g, '$1').trim() : s;
+          ? s.replace(/\s{2,}/g, ' ').replace(/\s+([.,;])/g, '$1').replace(/\ba (aluminum|aluminium)\b/gi, 'an $1').trim() : s;
         // Guard 5 — diagnostic text scrub: at parent-family level a
         // laptop description may not carry sub-family-diagnostic
         // specifics (port counts, wedge/tapered chassis shapes) that
@@ -883,7 +883,7 @@ functions.http('analyzeProduct', async (req, res) => {
           const scrubDiagnostic = (s) => {
             if (typeof s !== 'string') return s;
             let out = s
-              .replace(/\b(two|three|four|five|\d+)\s+(USB-C\/Thunderbolt|Thunderbolt\/USB-C|USB-C|Thunderbolt|USB)\s+ports?\b/gi, 'USB-C/Thunderbolt ports')
+              .replace(/\b(two|three|four|five|\d+)\s+(USB-C\s*\/\s*Thunderbolt|Thunderbolt\s*\/\s*USB-C|USB-C|Thunderbolt|USB)\s+ports?\b/gi, 'USB-C/Thunderbolt ports')
               .replace(/\btapered wedge\b/gi, 'aluminum')
               .replace(/\btapered\b/gi, 'slim')
               .replace(/\bwedge-style\b/gi, '')
@@ -951,8 +951,12 @@ functions.http('analyzeProduct', async (req, res) => {
         if (appliedGuards.includes('display_unit_flag') && !variantFound) {
           try {
             const placardPrompt = 'Look at the photo or photos. If a placard, sign, price card, label, or packaging in the photo names an EDITION or VARIANT of the product (for example a phrase like "Supreme Edition" or "Limited Edition", in any language), reply with ONLY this JSON object: {"variant": "<the edition or variant name, translated into English>"} . If no edition or variant is named anywhere in the photo, reply {"variant": ""}. Never guess an edition that is not written in the photo.';
-            const second = await callGemini(apiKey, result.model, jpegBase64List, placardPrompt, startedAt, 'medium');
-            const variant = typeof second?.parsed?.variant === 'string' ? second.parsed.variant.trim() : '';
+            let second = await callGemini(apiKey, result.model, jpegBase64List, placardPrompt, startedAt, 'low');
+            let variant = typeof second?.parsed?.variant === 'string' ? second.parsed.variant.trim() : '';
+            if (!variant) {
+              second = await callGemini(apiKey, result.model, jpegBase64List, placardPrompt, startedAt, 'medium');
+              variant = typeof second?.parsed?.variant === 'string' ? second.parsed.variant.trim() : '';
+            }
             if (variant && variant.length <= 60 && /edition/i.test(variant)) {
               let promoted = false;
               if (p.product_name && !p.product_name.includes(variant)) {
