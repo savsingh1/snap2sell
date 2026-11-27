@@ -637,7 +637,9 @@ functions.http('analyzeProduct', async (req, res) => {
             recognized: false,
             brand: '', model: '', product_name: '', product_family: '',
             category: 'Miscellaneous', subcategory: '', color: '',
-            condition: '', confidence: 0, identification_level: 'none',
+            // Round 11: same rejection condition normalization as
+            // the model path — a refusal assessed no condition.
+            condition: 'Not assessed from photo', confidence: 0, identification_level: 'none',
             // Round 10: aligned with the rejection_flag_split in
             // rejection_normalize below — a blur refusal DOES ask for
             // more photos (its user_message coaches a retake), so the
@@ -743,6 +745,18 @@ functions.http('analyzeProduct', async (req, res) => {
         // schema is consistent across outcomes (Gemini and Claude both
         // prescribed this in round 5).
         p.identification_level = 'none';
+        // Round 11 — rejection condition normalization: a refusal has
+        // assessed nothing, so a model-supplied condition grade is
+        // meaningless (round 10 T10: the quarry refusal shipped
+        // condition "good"). The field states plainly that no
+        // condition was assessed — the same value
+        // condition_by_construction derives for a recognized item
+        // with no located damage. The blur fast-path literal below
+        // carries the same value.
+        if (p.condition !== 'Not assessed from photo') {
+          p.condition = 'Not assessed from photo';
+          appliedGuards.push('rejection_condition_normalize');
+        }
         // Round 9 guard — rejection normalization: a refusal is not a
         // listing in progress, so it must not simultaneously ask for
         // more photos of the item (Claude round 8 flagged a
@@ -1398,6 +1412,85 @@ functions.http('analyzeProduct', async (req, res) => {
             p.user_message = um.trim() ? `${um.trim()} ${resNote}` : resNote;
           }
         }
+        // Round 11 guards — Claude round 10 (FAIL 8.54, zero
+        // criticals) docked defects verified one by one against
+        // round10-live.json: damage claims surviving on a photo too
+        // small to support them, invented descriptors inside the
+        // mismatch warning itself, and packaging / fitted parts
+        // listed as accessories. Same pattern as rounds 3.5-10:
+        // deterministic server-side code. This block runs after the
+        // low-res note (it consumes the same lowResCapFired state)
+        // and before the round 10 block, whose damage gate and
+        // condition construction then see the suppressed list.
+        // Guard — low-res damage suppression: guard 2 capped
+        // confidence because the photo is tiny (round 10 T4: a
+        // 403x403 fridge), yet the round 10 damage gate still kept
+        // located wear entries — a photo that cannot support the
+        // confidence cannot support a specific damage claim either.
+        // Under the low-res state, the damage list is emptied and
+        // the condition states it was not assessed
+        // (condition_by_construction derives the same value from
+        // the emptied list for non-property results).
+        if (lowResCapFired) {
+          const rawDmg = Array.isArray(p.visible_damage) ? p.visible_damage
+            : (typeof p.visible_damage === 'string' && p.visible_damage.trim()
+              ? [p.visible_damage] : []);
+          if (rawDmg.length > 0) {
+            p.visible_damage = [];
+            p.condition = 'Not assessed from photo';
+            appliedGuards.push('low_res_damage_suppression');
+          }
+        }
+        // Guard — mismatch descriptor scrub: the round 8 scrub
+        // trimmed invented era/style words from the DESCRIPTION when
+        // a mismatch warning was present, but the warning field
+        // itself kept them (round 10 T8: photo 2 described as "a
+        // vintage or non-Apple silver keyboard ... with sculpted
+        // keycaps" — era, maker and styling claims the photo cannot
+        // support). The same invented characterizations come out of
+        // photo_mismatch_warning; the factual content (silver
+        // keyboard, German QWERTZ layout, different device) stays.
+        if (typeof p.photo_mismatch_warning === 'string' && p.photo_mismatch_warning) {
+          const beforeWarn = p.photo_mismatch_warning;
+          const nextWarn = tidyText(beforeWarn
+            .replace(/\bvintage\s+or\s+non-?apple\b/gi, '')
+            .replace(/\bnon-?apple\b/gi, '')
+            .replace(/\bvintage\b/gi, '')
+            .replace(/\bsculpted\b/gi, ''));
+          if (nextWarn !== beforeWarn) {
+            p.photo_mismatch_warning = nextWarn;
+            appliedGuards.push('mismatch_descriptor_scrub');
+          }
+        }
+        // Guard — accessories hygiene: two non-accessory classes
+        // kept landing in included_accessories. (1) Packaging: the
+        // item's own box is not an included accessory (round 10
+        // T7/T8 shipped included_accessories ['Box']). Only an entry
+        // that is nothing but packaging goes; manuals, chargers,
+        // cases and every real accessory stay. (2) Fitted
+        // modifications on a vehicle: aftermarket wheels, a diffuser
+        // or a spoiler are part of the car and already described in
+        // the description, not items included with it (round 10 T6).
+        // Automotive only; the same words on another category are
+        // untouched.
+        if (Array.isArray(p.included_accessories)) {
+          const PACKAGING_ENTRY = /^\s*(?:the\s+)?(?:(?:original|retail|product)\s+)?(?:box|packaging)\s*$/i;
+          const afterPackaging = p.included_accessories.filter((e) =>
+            !(typeof e === 'string' && PACKAGING_ENTRY.test(e)));
+          if (JSON.stringify(afterPackaging) !== JSON.stringify(p.included_accessories)) {
+            p.included_accessories = afterPackaging;
+            appliedGuards.push('accessories_packaging_drop');
+          }
+          if (p.category === 'Automotive') {
+            const FITTED_MOD = (e) => typeof e === 'string' &&
+              (/^\s*aftermarket\b/i.test(e) || /\bdiffuser\b/i.test(e) || /\bspoiler\b/i.test(e));
+            const afterMods = p.included_accessories.filter((e) => !FITTED_MOD(e));
+            if (JSON.stringify(afterMods) !== JSON.stringify(p.included_accessories)) {
+              p.included_accessories = afterMods;
+              appliedGuards.push('accessories_modification_drop');
+            }
+          }
+        }
         // Round 10 guards — Claude round 9 (grounded re-grade, FAIL
         // 8.43, zero criticals) docked defects verified one by one
         // against round9-live.json: invented generic damage lines,
@@ -1458,6 +1551,11 @@ functions.http('analyzeProduct', async (req, res) => {
           const CONVERSION_CLAIM = /\bstep[-\s]?(?:up|down)\b|\bvoltage\s+(?:convert(?:er|ers|ing)?|conversions?)\b|\bconvert(?:er|ers)\b|\b(?:will\s+)?(?:require|requires|required|need|needs|needed)\b[^.;]*\b(?:adapter|converter)\b|\bcompatible\s+plug\s+adapter\b/i;
           const SPEC_ASSERTION = (s) => VOLTAGE_FIGURE.test(s) || PLUG_STANDARD.test(s) || CONVERSION_CLAIM.test(s);
           const PLUG_CAUTION = 'A plug is visible in the photo; verify the plug type and voltage compatibility before use.';
+          // Round 11: the switch/outlet-triggered variant — used
+          // when the electrical context is a wall switch or outlet
+          // the item is used with, not a plug literally in frame,
+          // so the wording makes no visibility claim.
+          const SWITCH_CAUTION = 'Check the plug type and voltage compatibility before use.';
           if (typeof p.short_description === 'string' && p.short_description.trim()) {
             const original = p.short_description;
             const sentences = original.split(/(?<=[.!?])\s+/);
@@ -1492,6 +1590,19 @@ functions.http('analyzeProduct', async (req, res) => {
                 !/voltage compatibility|verify[^.]*\bvoltage\b/i.test(next)) {
               next = next ? `${next} ${PLUG_CAUTION}` : PLUG_CAUTION;
             }
+            // Round 11 — switch/outlet trigger: a description that
+            // places the item at a wall switch, switch panel or wall
+            // outlet carries the same cross-border caution even
+            // when no plug is literally in frame (round 10 T13: the
+            // mixer grinder description noted an Indian wall switch
+            // panel and carried no caution, while T2's visible plug
+            // earned one). Still exactly one caution per
+            // description: this runs only when no caution form is
+            // already present after the plug pass above.
+            if (!/voltage compatibility|verify[^.]*\bvoltage\b/i.test(next) &&
+                /\b(?:wall\s+switch|switch\s+panel|wall\s+outlet|power\s+outlet|wall\s+socket)\b/i.test(original)) {
+              next = next ? `${next} ${SWITCH_CAUTION}` : SWITCH_CAUTION;
+            }
             if (next !== original) {
               p.short_description = next;
               appliedGuards.push('plug_voltage_neutralize');
@@ -1508,6 +1619,15 @@ functions.http('analyzeProduct', async (req, res) => {
         // product content — are dropped from the description.
         {
           const FRAGMENT = /^(?:operating state|working state|power state|functional state|condition|functionality|performance|operation)\b[^.!?]*\b(?:is|are)\s+not\s+(?:verified|assessed|confirmed|known)\b[^.!?]*$/i;
+          // Round 11 — leftover-fragment sentences: an earlier scrub
+          // can leave a sentence whose descriptor lost its head word
+          // (round 10 T7: "A -profile aluminum body." — flagged by
+          // all three graders). The shape is an article, a space,
+          // then a hyphen fragment. Legitimate hyphenated compounds
+          // are safe: in "right-hand drive" or "stainless-steel
+          // build" a word character sits before the hyphen, not an
+          // article and a space.
+          const LEFTOVER_FRAGMENT = /\b(?:A|An|The)\s+-[a-z]/i;
           let artifactFired = false;
           for (const key of ['short_description', 'suggested_title']) {
             if (typeof p[key] !== 'string' || !p[key]) continue;
@@ -1516,7 +1636,8 @@ functions.http('analyzeProduct', async (req, res) => {
             if (key === 'short_description') {
               const sentences = next.split(/(?<=[.!?])\s+/);
               const kept = sentences.filter((s) =>
-                !FRAGMENT.test(s.trim().replace(/[.!?]+$/, '')));
+                !FRAGMENT.test(s.trim().replace(/[.!?]+$/, '')) &&
+                !LEFTOVER_FRAGMENT.test(s));
               next = tidyText(kept.join(' '));
             }
             if (next !== before) { p[key] = next; artifactFired = true; }
@@ -1727,6 +1848,21 @@ functions.http('analyzeProduct', async (req, res) => {
               p.condition = nextCondition;
               condFired = true;
             }
+          } else if (!visibleDamageHasDefect(p.visible_damage) &&
+                     typeof p.condition === 'string' &&
+                     /^(?:very\s+)?(?:good|excellent|fair|poor|great|average|mint|pristine|like[-\s]new)(?:\s+condition)?$/i
+                       .test(p.condition.trim())) {
+            // Round 11 — property condition normalization: Real
+            // Estate keeps its own condition handling (the property
+            // flow, not this derivation), but a bare grade word with
+            // no located damage behind it is unsupported (round 10
+            // T9: a house exterior shipped condition "good" with an
+            // empty damage list). With nothing assessed, the field
+            // says so. A property WITH located damage keeps its
+            // condition untouched.
+            p.condition = 'Not assessed from photo';
+            condFired = true;
+            appliedGuards.push('property_condition_normalize');
           }
           if (condFired) appliedGuards.push('condition_by_construction');
         }
