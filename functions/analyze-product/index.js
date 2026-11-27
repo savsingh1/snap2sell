@@ -638,14 +638,16 @@ functions.http('analyzeProduct', async (req, res) => {
             brand: '', model: '', product_name: '', product_family: '',
             category: 'Miscellaneous', subcategory: '', color: '',
             condition: '', confidence: 0, identification_level: 'none',
-            // Round 9: aligned with rejection_normalize below — a
-            // refusal carries needs_more_photos false and no photo
-            // list; the retake guidance lives in user_message.
-            needs_more_photos: false, needs_more_information: false,
+            // Round 10: aligned with the rejection_flag_split in
+            // rejection_normalize below — a blur refusal DOES ask for
+            // more photos (its user_message coaches a retake), so the
+            // flag is true and the retake instruction is the one
+            // recommended photo. Non-product refusals stay false/[].
+            needs_more_photos: true, needs_more_information: false,
             price_low: 0, price_high: 0, suggested_price: 0,
             included_accessories: [], missing_parts: [], visible_damage: [],
             suggested_title: '', short_description: '', search_keywords: [],
-            recommended_photos: [],
+            recommended_photos: ['Retake the photo in good light, hold the camera steady, and tap the item to focus.'],
             rejection_reason: 'blurry_image',
             user_message: 'That photo is too blurry to identify. Try again in good light, hold the camera steady, and tap the item to focus before taking the photo.',
             photo_mismatch_warning: '',
@@ -749,12 +751,25 @@ functions.http('analyzeProduct', async (req, res) => {
         // recommended_photos belong to the recognized flow; the
         // explanation stays in rejection_reason / user_message,
         // untouched.
-        if (p.needs_more_photos !== false ||
-            !Array.isArray(p.recommended_photos) || p.recommended_photos.length > 0) {
+        // Round 10 — rejection flag split: round 9 forced false/[]
+        // for EVERY refusal, but a blur refusal's user_message
+        // coaches a retake, so false/[] contradicts the message
+        // (Claude round 9 ranked "rejection flags" a top gap). Split
+        // by reason: blurry_image carries needs_more_photos true and
+        // the one retake instruction as its recommended photo (the
+        // blur fast-path above returns this same shape); every other
+        // refusal keeps false/[].
+        const blurRejection = p.rejection_reason === 'blurry_image';
+        const rejectionNeedsMore = blurRejection;
+        const rejectionPhotos = blurRejection
+          ? ['Retake the photo in good light, hold the camera steady, and tap the item to focus.']
+          : [];
+        if (p.needs_more_photos !== rejectionNeedsMore ||
+            JSON.stringify(p.recommended_photos) !== JSON.stringify(rejectionPhotos)) {
           appliedGuards.push('rejection_normalize');
         }
-        p.needs_more_photos = false;
-        p.recommended_photos = [];
+        p.needs_more_photos = rejectionNeedsMore;
+        p.recommended_photos = rejectionPhotos;
       } else {
         // Consistency rules the model sometimes misses, enforced the same
         // way: if it asked for more photos, more photos are needed.
@@ -1382,6 +1397,176 @@ functions.http('analyzeProduct', async (req, res) => {
           if (!/resolution/i.test(um)) {
             p.user_message = um.trim() ? `${um.trim()} ${resNote}` : resNote;
           }
+        }
+        // Round 10 guards — Claude round 9 (grounded re-grade, FAIL
+        // 8.43, zero criticals) docked defects verified one by one
+        // against round9-live.json: invented generic damage lines,
+        // plug/voltage spec assertions, scrub artifacts, buried and
+        // duplicated mismatch text, and the unaddressed display
+        // tether. Same pattern as rounds 3.5-9: deterministic
+        // server-side code. This block runs after every other text
+        // guard and immediately before condition_by_construction,
+        // which must derive the condition field from the FILTERED
+        // damage list.
+        // Guard — damage specificity gate: the model invents generic
+        // wear boilerplate for items with no visible damage (round 9
+        // T2: a damage-free toaster shipped "minor surface scuffs and
+        // heat marks consistent with commercial use"; T1/T14: the
+        // "light surface scuffs and wear" stock line). An entry
+        // survives only as a concrete defect: a strong defect noun
+        // (crack, stain, yellowing, ...), or a weak wear word tied to
+        // a named part of the item ("scuffs and marks on doors").
+        // Stock boilerplate ("cosmetic wear", "consistent with use",
+        // the "light surface scuffs and wear" form) is dropped even
+        // when it names a part, and none-like entries go too — the
+        // buyer-facing list either names a real defect or is empty.
+        {
+          const STRONG_DEFECT = /\b(?:cracks?|cracked|chips?|chipped|tears?|torn|stains?|stained|staining|dents?|dented|yellowing|yellowed|discolou?ration|discolou?red|rust|rusty|corrosion|corroded|missing|broken|bent|burns?|burnt|scorch(?:ed)?|holes?|peeling|peeled|faded|fading|grime|grimy|residue|soiling|soiled|warped|leaks?|leaking|gouges?|pitting|pitted)\b/i;
+          const WEAK_DEFECT = /\b(?:scuffs?|scuffed|scratch(?:es|ed)?|marks?|smudges?|wear|scrapes?|scraped|dings?|blemish(?:es)?)\b/i;
+          const HARD_GENERIC = /\bcosmetic wear\b|\bconsistent with\b|\bsigns? of (?:kitchen )?use\b|\bnormal wear\b|\bgeneral wear\b/i;
+          const STOCK_WEAR = /\b(?:light|minor)\s+(?:surface\s+)?(?:scuffs?|scratches|marks)\s+and\s+wear\b/i;
+          const PART_NOUN = /\b(?:doors?|handles?|hinges?|corners?|edges?|screen|lids?|base|seams?|shelf|shelves|buttons?|wheels?|legs?|tops?|bottoms?|sides?|housing|collar|jars?|cups?|keyboard|frame|panels?|grilles?|neck|exterior|interior|underside|rim|bezel|dials?|knobs?|drawers?|gasket|spout|blades?)\b/i;
+          const NONE_LIKE_DAMAGE = /^(?:none|n\/a|na|nil|nothing|none\s+visible|no\s+(?:visible\s+)?(?:damage|defects?|scratches|scuffs|dents|wear|marks|issues?)|not\s+(?:visible|assessed))[.\s]*$/i;
+          const rawDamage = Array.isArray(p.visible_damage) ? p.visible_damage
+            : (typeof p.visible_damage === 'string' && p.visible_damage.trim() ? [p.visible_damage] : []);
+          const keptDamage = rawDamage.filter((entry) => {
+            if (typeof entry !== 'string') return false;
+            const t = entry.trim();
+            if (!t || NONE_LIKE_DAMAGE.test(t)) return false;
+            if (STRONG_DEFECT.test(t)) return true;
+            if (HARD_GENERIC.test(t) || STOCK_WEAR.test(t)) return false;
+            return WEAK_DEFECT.test(t) && PART_NOUN.test(t);
+          });
+          if (JSON.stringify(keptDamage) !== JSON.stringify(rawDamage)) {
+            p.visible_damage = keptDamage;
+            appliedGuards.push('damage_specificity_gate');
+          }
+        }
+        // Guard — plug/voltage neutralization: the model states plug
+        // standards and voltage figures as the item's spec (round 9
+        // T13: "likely 230V Indian standard... will need a step-up
+        // voltage converter"; T2 named the outlet type and an adapter
+        // requirement). Those are inferences, not visible facts.
+        // Voltage figures, named standards and converter/adapter
+        // requirements come out clause by clause; visible facts (a
+        // cord and plug in the photo) stay; and where a plug or
+        // outlet is in play the description carries exactly one
+        // neutral caution sentence instead.
+        {
+          const VOLTAGE_FIGURE = /\b\d{2,3}(?:\s*[-–]\s*\d{2,3})?\s*(?:volts?|vac|v)\b/i;
+          const PLUG_STANDARD = /\bschuko\b|\beuroplug\b|\bbs\s?1363\b|\bnema\b|\bcee\s?7\b|\btype\s?[a-z]\s+(?:plug|socket|outlet|standard)\b|\b(?:indian|european|american|british|australian)\s+standard\b/i;
+          const CONVERSION_CLAIM = /\bstep[-\s]?(?:up|down)\b|\bvoltage\s+(?:convert(?:er|ers|ing)?|conversions?)\b|\bconvert(?:er|ers)\b|\b(?:will\s+)?(?:require|requires|required|need|needs|needed)\b[^.;]*\b(?:adapter|converter)\b|\bcompatible\s+plug\s+adapter\b/i;
+          const SPEC_ASSERTION = (s) => VOLTAGE_FIGURE.test(s) || PLUG_STANDARD.test(s) || CONVERSION_CLAIM.test(s);
+          const PLUG_CAUTION = 'A plug is visible in the photo; verify the plug type and voltage compatibility before use.';
+          if (typeof p.short_description === 'string' && p.short_description.trim()) {
+            const original = p.short_description;
+            const sentences = original.split(/(?<=[.!?])\s+/);
+            const keptSentences = [];
+            for (const sent of sentences) {
+              if (!SPEC_ASSERTION(sent)) { keptSentences.push(sent); continue; }
+              // Parenthetical spec assertions go first — the clause
+              // around them is often a plain visible fact.
+              let work = sent.replace(/\([^()]*\)/g, (m) =>
+                (VOLTAGE_FIGURE.test(m) || PLUG_STANDARD.test(m)) ? '' : m);
+              work = work.replace(/\s{2,}/g, ' ').trim();
+              if (!SPEC_ASSERTION(work)) {
+                if (work) keptSentences.push(work);
+                continue;
+              }
+              const trailMatch = work.match(/[.!?]+$/);
+              const trail = trailMatch ? trailMatch[0] : '.';
+              const core = trailMatch ? work.slice(0, -trail.length) : work;
+              const clauses = core.split(/\s*;\s*|\s*,\s+|\s+[—–]\s+/)
+                .map((c) => c.trim()).filter((c) => c.length > 0);
+              const keptClauses = clauses.filter((c) => !SPEC_ASSERTION(c));
+              if (keptClauses.length === 0) continue;
+              let joined = keptClauses.join(core.includes(';') ? '; ' : ', ');
+              joined = joined.charAt(0).toUpperCase() + joined.slice(1);
+              keptSentences.push(joined + trail);
+            }
+            let next = tidyText(keptSentences.join(' '));
+            // Exactly one neutral caution when a plug or outlet is
+            // in play — judged on the original text, so a dropped
+            // spec sentence still earns the caution.
+            if (/\b(?:plug|outlet|socket)\b/i.test(original) &&
+                !/voltage compatibility|verify[^.]*\bvoltage\b/i.test(next)) {
+              next = next ? `${next} ${PLUG_CAUTION}` : PLUG_CAUTION;
+            }
+            if (next !== original) {
+              p.short_description = next;
+              appliedGuards.push('plug_voltage_neutralize');
+            }
+          }
+        }
+        // Guard — artifact cleanup: earlier scrubs leave debris in
+        // buyer-facing text (round 9 T5: "UK-style registration
+        // plates ()" after the plate scrub; T8: the orphaned
+        // fragment "Operating state are not verified."). Empty
+        // parentheses come out of the description and the title, and
+        // standalone "state ... is/are not verified" fragments —
+        // sentences whose subject is a bare state noun with no
+        // product content — are dropped from the description.
+        {
+          const FRAGMENT = /^(?:operating state|working state|power state|functional state|condition|functionality|performance|operation)\b[^.!?]*\b(?:is|are)\s+not\s+(?:verified|assessed|confirmed|known)\b[^.!?]*$/i;
+          let artifactFired = false;
+          for (const key of ['short_description', 'suggested_title']) {
+            if (typeof p[key] !== 'string' || !p[key]) continue;
+            const before = p[key];
+            let next = tidyText(before.replace(/\(\s*\)/g, ''));
+            if (key === 'short_description') {
+              const sentences = next.split(/(?<=[.!?])\s+/);
+              const kept = sentences.filter((s) =>
+                !FRAGMENT.test(s.trim().replace(/[.!?]+$/, '')));
+              next = tidyText(kept.join(' '));
+            }
+            if (next !== before) { p[key] = next; artifactFired = true; }
+          }
+          if (artifactFired) appliedGuards.push('artifact_cleanup');
+        }
+        // Guard — mismatch plain statement: when the photos show
+        // different items, the description must OPEN with that fact
+        // in plain words (round 9 T8 buried it mid-description and
+        // duplicated it: a model note plus guard 9's appended note).
+        // The older note phrasings come out, the plain sentence goes
+        // first exactly once, and user_message asks the seller which
+        // unit to list. Detection (photo_mismatch_warning) is
+        // unchanged — presentation only.
+        if (typeof p.photo_mismatch_warning === 'string' && p.photo_mismatch_warning.length > 0 &&
+            typeof p.short_description === 'string') {
+          const PLAIN = 'The photos show two different units.';
+          const ASK = 'The photos appear to show two different units. Tell me which one you are selling and I will base the listing on that unit.';
+          let mismatchFired = false;
+          const sentences = p.short_description.split(/(?<=[.!?])\s+/);
+          const kept = sentences.filter((s) => {
+            const t = s.trim();
+            if (t === PLAIN) return false; // re-added at the front
+            if (/photos appear to show different/i.test(t)) return false;
+            if (/^note\b/i.test(t) && /different|does not match|do not match/i.test(t)) return false;
+            return true;
+          });
+          const rest = tidyText(kept.join(' '));
+          const next = rest ? `${PLAIN} ${rest}` : PLAIN;
+          if (next !== p.short_description) {
+            p.short_description = next;
+            mismatchFired = true;
+          }
+          const um = typeof p.user_message === 'string' ? p.user_message : '';
+          if (!/which one you are selling/i.test(um)) {
+            p.user_message = um.trim() ? `${um.trim()} ${ASK}` : ASK;
+            mismatchFired = true;
+          }
+          if (mismatchFired) appliedGuards.push('mismatch_plain_statement');
+        }
+        // Guard — display fixture note: guard 7 flags a retail
+        // display unit, but the warning never addressed the display
+        // hardware in the photo (round 9 T3: Claude docked the
+        // unmentioned anti-theft tether). The warning now states
+        // plainly that stands, fixtures and security tethers visible
+        // in the photo are not included.
+        if (typeof p.display_unit_warning === 'string' && p.display_unit_warning.trim() &&
+            !/security tethers/i.test(p.display_unit_warning)) {
+          p.display_unit_warning = `${p.display_unit_warning.trim()} Display stands, fixtures and security tethers visible in the photo are not included.`;
+          appliedGuards.push('display_fixture_note');
         }
         // Round 8 guard — condition by construction. Rounds 6-7
         // scrubbed condition CLAIMS phrase by phrase and the model
