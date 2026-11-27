@@ -118,6 +118,23 @@ void main() {
       expect(err.friendlyMessage, isNot(contains('Exception')));
     });
 
+    test(
+        'recognized + needs_more_photos + adequate confidence passes '
+        'through (round 7: the flag alone is a soft prompt)', () async {
+      final id = ninjaIdentification(confidence: 85)
+        ..['needs_more_photos'] = true
+        ..['recommended_photos'] = [
+          'Take a photo of the model-number label.'
+        ];
+      final service = serviceWith(
+          MockClient((_) async => jsonResponse(id, 200)));
+
+      final result = await service.analyzeItem(makeTestJpeg());
+
+      expect(result.title, 'Ninja Countertop Blender — Black');
+      expect(result.suggestedPrice, 55);
+    });
+
     test('unrecognized product asks for a clearer photo', () async {
       final id = ninjaIdentification(confidence: 20)..['recognized'] = false;
       final service = serviceWith(
