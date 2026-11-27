@@ -339,6 +339,13 @@ class Snap2SellBackendService implements AiService {
   ///   a user_message written for the user; show THAT instead of the
   ///   generic guidance below. The generic guidance remains the fallback
   ///   for responses without a user_message (older backends).
+  /// - Round 7: needs_more_photos on its own is a soft prompt, not a
+  ///   block. A recognized result at or above the confidence threshold
+  ///   continues to the review screen even when the backend would like
+  ///   more photos (the backend sets the flag on most single-photo
+  ///   results, so treating it as a block dead-ended ordinary items at
+  ///   the clearer-photo screen). The block remains for unrecognized
+  ///   results and for confidence below the threshold.
   void _throwIfLowConfidence(ProductIdentification id) {
     if (id.recognized && id.photoMismatchWarning.isNotEmpty) {
       return; // mismatch warning — listing continues, banner explains.
@@ -347,9 +354,7 @@ class Snap2SellBackendService implements AiService {
         id.category.trim().toLowerCase() == 'real estate') {
       return; // property result — the review screen routes it.
     }
-    final weak = !id.recognized ||
-        id.needsMorePhotos ||
-        id.confidence < lowConfidenceThreshold;
+    final weak = !id.recognized || id.confidence < lowConfidenceThreshold;
     if (!weak) return;
     if (ProgressiveIdentification.isFamilyMatch(id,
         minConfidence: lowConfidenceThreshold)) {
