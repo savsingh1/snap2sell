@@ -1964,6 +1964,59 @@ functions.http('analyzeProduct', async (req, res) => {
           }
           if (condFired) appliedGuards.push('condition_by_construction');
         }
+        // Round 15 — generalized description wear scrub: the
+        // round 14 scrub removed pure wear prose only inside the
+        // low-res suppression path, but the same contradiction can
+        // occur at any resolution (round 14 T14: condition "Not
+        // assessed from photo" and an empty damage list, yet the
+        // description ended "...; minor surface scuffs on the
+        // plastic cups."). Whenever the final output states the
+        // condition was not assessed AND the damage list is empty,
+        // the prose must not assert damage either. Two tiers, both
+        // built on the round 14 purity test (a wear term, no
+        // brand/logo/model fact anchor, every clause a wear
+        // claim): a sentence whose every clause is a wear claim
+        // comes out whole; inside a semicolon-joined sentence, a
+        // clause that is itself a pure wear claim comes out and
+        // the surviving clauses are re-joined with the
+        // punctuation repaired, so a factual clause sharing the
+        // sentence (the brand-logo clause on T14) stays. If every
+        // sentence would go, the description is left untouched
+        // rather than blanked. A result with an assessed (Used)
+        // condition or a non-empty damage list is untouched.
+        if (p.condition === 'Not assessed from photo' &&
+            !(Array.isArray(p.visible_damage) && p.visible_damage.length > 0) &&
+            typeof p.short_description === 'string' && p.short_description.trim()) {
+          const WEAR_CLAIM15 = /\b(?:marks?|scratches|scratching|scuffs?|stains?|staining|discolou?ration|aging|ageing|wear|worn|dents?|dented|chips?|chipped|cracks?|cracked|rust|tears?|damage[ds]?|grime|yellowing|fading|faded|peeling|corrosion)\b/i;
+          const FACT_ANCHOR15 = /\b(?:brand|logo|model|serial|manufacturer)\b/i;
+          const sentences15 = p.short_description.split(/(?<=[.!?])\s+/);
+          const kept15 = [];
+          let scrubbed15 = false;
+          for (const s of sentences15) {
+            if (!WEAR_CLAIM15.test(s)) { kept15.push(s); continue; }
+            const clauses15 = s.split(/\s*;\s*|\s*,\s*and\s+|\s+and\s+/i);
+            if (!FACT_ANCHOR15.test(s) && clauses15.every((c) => WEAR_CLAIM15.test(c))) {
+              scrubbed15 = true;
+              continue;
+            }
+            if (s.includes(';')) {
+              const parts15 = s.split(/\s*;\s*/);
+              const keptParts15 = parts15.filter((part) => !(WEAR_CLAIM15.test(part) && !FACT_ANCHOR15.test(part)));
+              if (keptParts15.length > 0 && keptParts15.length < parts15.length) {
+                let rebuilt15 = keptParts15.join('; ').trim();
+                if (!/[.!?]$/.test(rebuilt15)) rebuilt15 += '.';
+                kept15.push(rebuilt15);
+                scrubbed15 = true;
+                continue;
+              }
+            }
+            kept15.push(s);
+          }
+          if (scrubbed15 && kept15.length > 0) {
+            p.short_description = kept15.join(' ');
+            appliedGuards.push('description_wear_scrub');
+          }
+        }
         // Round 12 guards — Claude round 11 (FAIL 8.57, zero
         // criticals) confirmed the round 11 fixes landed and docked
         // what remained: a layout speculation leading the house
@@ -2015,10 +2068,26 @@ functions.http('analyzeProduct', async (req, res) => {
             const sentences = p.short_description.split(/(?<=[.!?])\s+/);
             if (sentences.length > 0) {
               const TYPE_NOUN = String.raw`single-family\s+(?:residential\s+)?(?:house|home|residence)\b`;
+              // Round 15: the bare form comes out too — a single
+              // layout word directly before the type noun ("Multi-
+              // level single-family home ...", round 14 T9) is the
+              // same unestablished claim as the pair. The pair
+              // forms are tried first so "multi-level or
+              // split-level" is never half-eaten. A match at the
+              // very start of the sentence leaves the type noun to
+              // open the sentence, so its first letter is
+              // capitalized.
+              let layoutAtStart = false;
               const nextFirst = sentences[0].replace(
-                new RegExp(String.raw`\b(?:multi-level\s+or\s+split-level|split-level\s+or\s+multi-level)\s+(?=${TYPE_NOUN})`, 'i'), '');
+                new RegExp(String.raw`\b(?:multi-level\s+or\s+split-level|split-level\s+or\s+multi-level|multi-level|split-level)\s+(?=${TYPE_NOUN})`, 'i'),
+                (m, ...rest) => {
+                  if (rest[rest.length - 2] === 0) layoutAtStart = true;
+                  return '';
+                });
               if (nextFirst !== sentences[0]) {
-                sentences[0] = nextFirst;
+                sentences[0] = layoutAtStart
+                  ? nextFirst.charAt(0).toUpperCase() + nextFirst.slice(1)
+                  : nextFirst;
                 p.short_description = sentences.join(' ');
                 layoutFired = true;
               }
@@ -2090,6 +2159,68 @@ functions.http('analyzeProduct', async (req, res) => {
             }
           }
         }
+        // Round 15 — generation marker harvest: the sync above
+        // can only move a marker the TITLE carries. When neither
+        // the name nor the title carries one but the model's own
+        // search keywords attach a generation marker directly to
+        // the model token (round 14 T5: keywords carry "Mk4 R32"
+        // for model "Golf R32", while the name and title dropped
+        // it; the lat3 run's name carried "(Mk4)" itself), the
+        // marker is harvested from the keywords into the name in
+        // the established format, and the title's leading name
+        // segment follows. Only generation markers (MkN / Gen N /
+        // Series N) directly attached to the model token (the
+        // full model string or its last token, on either side)
+        // qualify — trim keywords like VR6 or 4Motion are never
+        // harvested, and a name or title already carrying a
+        // marker is left byte-identical.
+        {
+          const nameStr15 = typeof p.product_name === 'string' ? p.product_name.trim() : '';
+          const titleStr15 = (typeof p.suggested_title === 'string' && p.suggested_title)
+            ? p.suggested_title
+            : (typeof p.title === 'string' ? p.title : '');
+          const MARKER15 = '(?:Mk\\d+|Gen \\d+|Series \\d+)';
+          if (nameStr15 &&
+              !new RegExp(`\\(${MARKER15}\\)`, 'i').test(nameStr15) &&
+              !new RegExp(`\\(${MARKER15}\\)`, 'i').test(titleStr15) &&
+              typeof p.model === 'string' && p.model.trim() &&
+              Array.isArray(p.search_keywords)) {
+            const modelStr15 = p.model.trim();
+            const escModel15 = modelStr15.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const lastToken15 = modelStr15.split(/\s+/).pop();
+            const escToken15 = lastToken15.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            let harvested15 = '';
+            for (const kw of p.search_keywords) {
+              if (typeof kw !== 'string') continue;
+              const kwStr15 = kw.trim();
+              const before15 = kwStr15.match(new RegExp(`^(${MARKER15})\\s+(?:${escModel15}|${escToken15})$`, 'i'));
+              const after15 = kwStr15.match(new RegExp(`^(?:${escModel15}|${escToken15})\\s+(${MARKER15})$`, 'i'));
+              const found15 = before15 ? before15[1] : (after15 ? after15[1] : '');
+              if (found15) {
+                const norm15 = found15.match(/^(mk|gen|series)\s*(\d+)$/i);
+                harvested15 = norm15
+                  ? (norm15[1].toLowerCase() === 'mk'
+                    ? `Mk${norm15[2]}`
+                    : `${norm15[1].toLowerCase() === 'gen' ? 'Gen' : 'Series'} ${norm15[2]}`)
+                  : found15;
+                break;
+              }
+            }
+            if (harvested15) {
+              const newName15 = `${nameStr15} (${harvested15})`;
+              p.product_name = newName15;
+              if (titleStr15 && titleStr15.startsWith(nameStr15)) {
+                const newTitle15 = newName15 + titleStr15.slice(nameStr15.length);
+                if (typeof p.suggested_title === 'string' && p.suggested_title) {
+                  p.suggested_title = newTitle15;
+                } else if (typeof p.title === 'string') {
+                  p.title = newTitle15;
+                }
+              }
+              appliedGuards.push('name_title_qualifier_sync');
+            }
+          }
+        }
         // Guard — seller instruction strip: guard 7 flags a retail
         // display unit structurally, but the model still leads the
         // buyer-facing description with an instruction to the
@@ -2155,18 +2286,19 @@ functions.http('analyzeProduct', async (req, res) => {
         // T7) — the description lists unknown SPECS while the buyer
         // is left to assume the model itself is settled. Using the
         // round 3.8 signal (MacBook parent family, no model on
-        // record), the description gains the plain statement,
-        // unless it already says the model or sub-family is
-        // unknown.
+        // record), the description gains the plain statement.
+        // Round 15: the statement is ensured unconditionally — a
+        // family-level laptop result ALWAYS carries the exact
+        // sentence (appended when absent, never duplicated). The
+        // round 12 skip let it vanish whenever the model happened
+        // to list unknown specs in other words instead (round 14
+        // T7: specs-unknown prose present, the exact-model
+        // sentence absent).
         if (!p.model && (p.product_family === 'MacBook' || p.product_name === 'Apple MacBook') &&
             typeof p.short_description === 'string' && p.short_description.trim()) {
-          const desc7 = p.short_description;
-          const alreadyStated7 = /\bmodel\b[^.!?]{0,60}\bunknown\b/i.test(desc7) ||
-            /\bsub-?family\b[^.!?]{0,60}\bunknown\b/i.test(desc7) ||
-            /\bunknown\b[^.!?]{0,30}\bmodel\b/i.test(desc7) ||
-            /cannot be determined/i.test(desc7) || /can'?t be told/i.test(desc7);
-          if (!alreadyStated7) {
-            p.short_description = `${desc7.trim()} The exact model cannot be determined from the photo.`;
+          const EXACT_MODEL15 = 'The exact model cannot be determined from the photo.';
+          if (!p.short_description.includes(EXACT_MODEL15)) {
+            p.short_description = `${p.short_description.trim()} ${EXACT_MODEL15}`;
             appliedGuards.push('subfamily_unknown_statement');
           }
         }
