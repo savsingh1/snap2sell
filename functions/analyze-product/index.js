@@ -1435,11 +1435,42 @@ functions.http('analyzeProduct', async (req, res) => {
           const rawDmg = Array.isArray(p.visible_damage) ? p.visible_damage
             : (typeof p.visible_damage === 'string' && p.visible_damage.trim()
               ? [p.visible_damage] : []);
+          let suppressionFired = false;
           if (rawDmg.length > 0) {
             p.visible_damage = [];
             p.condition = 'Not assessed from photo';
-            appliedGuards.push('low_res_damage_suppression');
+            suppressionFired = true;
           }
+          // Round 14 — description wear scrub: emptying the damage
+          // list did not stop the model's prose from asserting the
+          // same wear (round 13 T4: "Exterior shows cosmetic
+          // surface marks; faint scratches; and aging on the handle
+          // plastic." on the 403x403 fridge, contradicting the
+          // "Not assessed from photo" condition the suppression
+          // just set). Under the same low-res state, a description
+          // sentence that is PURELY a damage/wear claim comes out.
+          // Pure is strict: the sentence carries a wear term, names
+          // no brand/logo/model fact, and every clause in it (split
+          // on ";" and "and") carries a wear term of its own — a
+          // clause without one is a non-damage fact riding along,
+          // and a mixed sentence stays whole. If every sentence
+          // qualified the field would be blanked, so that case is
+          // left untouched.
+          if (typeof p.short_description === 'string' && p.short_description.trim()) {
+            const WEAR_CLAIM = /\b(?:marks?|scratches|scratching|scuffs?|stains?|staining|discolou?ration|aging|ageing|wear|worn|dents?|dented|chips?|chipped|cracks?|cracked|rust|tears?|damage[ds]?|grime|yellowing|fading|faded|peeling|corrosion)\b/i;
+            const FACT_ANCHOR = /\b(?:brand|logo|model|serial|manufacturer)\b/i;
+            const sentences = p.short_description.split(/(?<=[.!?])\s+/);
+            const kept = sentences.filter((s) => {
+              if (!WEAR_CLAIM.test(s) || FACT_ANCHOR.test(s)) return true;
+              const clauses = s.split(/\s*;\s*|\s*,\s*and\s+|\s+and\s+/i);
+              return !clauses.every((c) => WEAR_CLAIM.test(c));
+            });
+            if (kept.length > 0 && kept.length !== sentences.length) {
+              p.short_description = kept.join(' ');
+              suppressionFired = true;
+            }
+          }
+          if (suppressionFired) appliedGuards.push('low_res_damage_suppression');
         }
         // Guard — mismatch descriptor scrub: the round 8 scrub
         // trimmed invented era/style words from the DESCRIPTION when
@@ -1968,6 +1999,30 @@ functions.http('analyzeProduct', async (req, res) => {
             const rest = p.short_description.replace(LAYOUT_LEAD, '');
             p.short_description = rest.charAt(0).toUpperCase() + rest.slice(1);
             layoutFired = true;
+          }
+          // Round 14: the same phrase can sit inside the first
+          // sentence, modifying the property-type noun, where the
+          // leading anchor cannot see it (round 13 T9: "The photo
+          // shows a multi-level or split-level single-family
+          // residential house featuring ..."). In the FIRST
+          // sentence only, the phrase comes out when it directly
+          // precedes the property-type noun phrase; the article
+          // the model already wrote stays, so the sentence keeps
+          // its grammar. The phrase anywhere else — later
+          // sentences, or not modifying the type noun — is left
+          // alone.
+          {
+            const sentences = p.short_description.split(/(?<=[.!?])\s+/);
+            if (sentences.length > 0) {
+              const TYPE_NOUN = String.raw`single-family\s+(?:residential\s+)?(?:house|home|residence)\b`;
+              const nextFirst = sentences[0].replace(
+                new RegExp(String.raw`\b(?:multi-level\s+or\s+split-level|split-level\s+or\s+multi-level)\s+(?=${TYPE_NOUN})`, 'i'), '');
+              if (nextFirst !== sentences[0]) {
+                sentences[0] = nextFirst;
+                p.short_description = sentences.join(' ');
+                layoutFired = true;
+              }
+            }
           }
           const WALKOUT_ITEM = String.raw`(?:a\s+|an\s+|the\s+)?walk-?out\s+lower\s+level\s+entrance\b`;
           if (new RegExp(WALKOUT_ITEM, 'i').test(p.short_description)) {
