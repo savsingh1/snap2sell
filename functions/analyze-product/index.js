@@ -1456,6 +1456,11 @@ functions.http('analyzeProduct', async (req, res) => {
         // forms go before the bare word so the sentence keeps its
         // grammar ("different or older" -> "different", "an older"
         // -> "a").
+        // Round 13: "beveled" (US spelling) joins the scrub — the
+        // round 8 description scrub already removed both spellings
+        // from short_description, but the warning field itself only
+        // ever had the invented-characterization list, and round 12
+        // T8 shipped "silver beveled keyboard keys" in the warning.
         if (typeof p.photo_mismatch_warning === 'string' && p.photo_mismatch_warning) {
           const beforeWarn = p.photo_mismatch_warning;
           const nextWarn = tidyText(beforeWarn
@@ -1463,6 +1468,8 @@ functions.http('analyzeProduct', async (req, res) => {
             .replace(/\bnon-?apple\b/gi, '')
             .replace(/\bvintage\b/gi, '')
             .replace(/\bsculpted\b/gi, '')
+            .replace(/\bbevelled\b/gi, '')
+            .replace(/\bbeveled\b/gi, '')
             .replace(/\ban\s+older\b/gi, 'a')
             .replace(/\bor\s+older\b/gi, '')
             .replace(/\bolder\b/gi, ''));
@@ -1564,7 +1571,18 @@ functions.http('analyzeProduct', async (req, res) => {
           const VOLTAGE_FIGURE = /\b\d{2,3}(?:\s*[-–]\s*\d{2,3})?\s*(?:volts?|vac|v)\b/i;
           const PLUG_STANDARD = /\bschuko\b|\beuroplug\b|\bbs\s?1363\b|\bnema\b|\bcee\s?7\b|\btype\s?[a-z]\s+(?:plug|socket|outlet|standard)\b|\b(?:indian|european|american|british|australian)\s+standard\b/i;
           const CONVERSION_CLAIM = /\bstep[-\s]?(?:up|down)\b|\bvoltage\s+(?:convert(?:er|ers|ing)?|conversions?)\b|\bconvert(?:er|ers)\b|\b(?:will\s+)?(?:require|requires|required|need|needs|needed)\b[^.;]*\b(?:adapter|converter)\b|\bcompatible\s+plug\s+adapter\b/i;
-          const SPEC_ASSERTION = (s) => VOLTAGE_FIGURE.test(s) || PLUG_STANDARD.test(s) || CONVERSION_CLAIM.test(s);
+          // Round 13: a voltage-support assertion is the same
+          // inference in softer words (round 12 T13: "North American
+          // buyers will require appropriate voltage support"). It
+          // carries no figure, no named standard and no converter,
+          // so all three patterns above missed it: CONVERSION_CLAIM's
+          // require-branch only fires when an adapter or converter
+          // follows the verb. "Voltage support" itself, and a
+          // require/need verb reaching a voltage mention, are spec
+          // assertions too. The neutral cautions are safe: neither
+          // contains "voltage support" nor a require/need verb.
+          const VOLTAGE_SUPPORT = /\bvoltage\s+support\b|\b(?:will\s+)?(?:require|requires|required|need|needs|needed)\b[^.;]*\bvoltage\b/i;
+          const SPEC_ASSERTION = (s) => VOLTAGE_FIGURE.test(s) || PLUG_STANDARD.test(s) || CONVERSION_CLAIM.test(s) || VOLTAGE_SUPPORT.test(s);
           const PLUG_CAUTION = 'A plug is visible in the photo; verify the plug type and voltage compatibility before use.';
           // Round 11: the switch/outlet-triggered variant — used
           // when the electrical context is a wall switch or outlet
@@ -1614,8 +1632,16 @@ functions.http('analyzeProduct', async (req, res) => {
             // earned one). Still exactly one caution per
             // description: this runs only when no caution form is
             // already present after the plug pass above.
+            // Round 13 diagnosis (round 12 T13 regression): the
+            // trigger missed "wall switchboard" — the alternative
+            // wall\s+switch needs the trailing \b to hold between
+            // "switch" and "board", and two word characters have no
+            // boundary between them, so the whole pattern failed on
+            // the one wording the model actually used. The trigger
+            // now accepts the switchboard forms (with or without
+            // "wall").
             if (!/voltage compatibility|verify[^.]*\bvoltage\b/i.test(next) &&
-                /\b(?:wall\s+switch|switch\s+panel|wall\s+outlet|power\s+outlet|wall\s+socket)\b/i.test(original)) {
+                /\b(?:wall\s+switch(?:board)?|switch\s+panel|switchboard|wall\s+outlet|power\s+outlet|wall\s+socket)\b/i.test(original)) {
               next = next ? `${next} ${SWITCH_CAUTION}` : SWITCH_CAUTION;
             }
             if (next !== original) {
@@ -1643,6 +1669,21 @@ functions.http('analyzeProduct', async (req, res) => {
           // build" a word character sits before the hyphen, not an
           // article and a space.
           const LEFTOVER_FRAGMENT = /\b(?:A|An|The)\s+-[a-z]/i;
+          // Round 13 — dangling plate fragment: the plate scrub
+          // removes the plate characters and can leave the clause
+          // that introduced them with nothing to read (round 12 T5:
+          // "...visibly badged with the VW emblem and R32 grille
+          // badge, featuring a front plate reading." — flagged by
+          // Claude AND ChatGPT). Two shapes: the dangling clause is
+          // the sentence's trailing clause (drop it from the last
+          // comma, keep the rest of the sentence), or the whole
+          // sentence is the plate phrase (drop the sentence). A
+          // sentence that gives the plate an object ("The front
+          // plate reads R32 60LF in the photo.") or uses "reading"
+          // with an object after it never ends on "plate reading"
+          // and is untouched.
+          const DANGLING_PLATE_CLAUSE = /,\s*(?:featuring\s+)?[^,.;]*\b(?:license\s+plate|number\s+plate|plate)\s+reading\s*$/i;
+          const DANGLING_PLATE_SENTENCE = /^(?:featuring\s+)?(?:a\s+|an\s+|the\s+)?(?:(?:front|rear)\s+)?(?:license\s+plate|number\s+plate|plate)\s+reading$/i;
           let artifactFired = false;
           for (const key of ['short_description', 'suggested_title']) {
             if (typeof p[key] !== 'string' || !p[key]) continue;
@@ -1650,9 +1691,20 @@ functions.http('analyzeProduct', async (req, res) => {
             let next = tidyText(before.replace(/\(\s*\)/g, ''));
             if (key === 'short_description') {
               const sentences = next.split(/(?<=[.!?])\s+/);
-              const kept = sentences.filter((s) =>
-                !FRAGMENT.test(s.trim().replace(/[.!?]+$/, '')) &&
-                !LEFTOVER_FRAGMENT.test(s));
+              const kept = [];
+              for (const s of sentences) {
+                const trailMatch = s.match(/[.!?]+\s*$/);
+                const trail = trailMatch ? trailMatch[0].trim() : '';
+                const core = trailMatch ? s.slice(0, s.length - trailMatch[0].length) : s;
+                if (FRAGMENT.test(core.trim()) || LEFTOVER_FRAGMENT.test(s)) continue;
+                if (DANGLING_PLATE_SENTENCE.test(core.trim())) continue;
+                if (DANGLING_PLATE_CLAUSE.test(core)) {
+                  const stripped = core.replace(DANGLING_PLATE_CLAUSE, '').trim();
+                  if (stripped) kept.push(stripped + trail);
+                  continue;
+                }
+                kept.push(s);
+              }
               next = tidyText(kept.join(' '));
             }
             if (next !== before) { p[key] = next; artifactFired = true; }
@@ -1899,14 +1951,53 @@ functions.http('analyzeProduct', async (req, res) => {
         // photo does not establish the interior layout. Only a
         // LEADING phrase on a Real Estate result is removed;
         // mid-text mentions and other categories are untouched.
+        // Round 13: a second layout claim rides inside the
+        // description as a list item (round 12 T9: "The exterior
+        // displays multiple windows, a walk-out lower level
+        // entrance, mature landscaping, ...") — a walk-out lower
+        // level is the same unestablished layout claim, in list
+        // form. The item comes out wherever it sits in the list:
+        // first after the verb or in the middle ("ITEM, " goes),
+        // last before the period (", and ITEM" or ", ITEM" goes).
+        // Nothing else in the sentence changes.
         if (p.category === 'Real Estate' &&
             typeof p.short_description === 'string' && p.short_description.trim()) {
+          let layoutFired = false;
           const LAYOUT_LEAD = /^(?:multi-level\s+or\s+split-level|split-level\s+or\s+multi-level)\s+/i;
           if (LAYOUT_LEAD.test(p.short_description)) {
             const rest = p.short_description.replace(LAYOUT_LEAD, '');
             p.short_description = rest.charAt(0).toUpperCase() + rest.slice(1);
-            appliedGuards.push('property_layout_scrub');
+            layoutFired = true;
           }
+          const WALKOUT_ITEM = String.raw`(?:a\s+|an\s+|the\s+)?walk-?out\s+lower\s+level\s+entrance\b`;
+          if (new RegExp(WALKOUT_ITEM, 'i').test(p.short_description)) {
+            let next = p.short_description;
+            // "ITEM, " — first or middle list item. An item that
+            // OPENS a sentence is a subject with an appositive
+            // after it, not a list item, and is left alone.
+            next = next.replace(new RegExp(String.raw`\b${WALKOUT_ITEM}\s*,\s*`, 'i'),
+              (m, ...rest) => {
+                const offset = rest[rest.length - 2];
+                return /(?:^|[.!?]\s+)$/.test(next.slice(0, offset)) ? m : '';
+              });
+            // "ITEM and ..." — the first item of a two-item list
+            // has no comma; same sentence-start protection.
+            next = next.replace(new RegExp(String.raw`\b${WALKOUT_ITEM}\s+and\s+`, 'i'),
+              (m, ...rest) => {
+                const offset = rest[rest.length - 2];
+                return /(?:^|[.!?]\s+)$/.test(next.slice(0, offset)) ? m : '';
+              });
+            // ", and ITEM" / ", ITEM" — the final list item.
+            next = next
+              .replace(new RegExp(String.raw`,\s*and\s+${WALKOUT_ITEM}`, 'i'), '')
+              .replace(new RegExp(String.raw`\s*,\s*${WALKOUT_ITEM}`, 'i'), '');
+            next = tidyText(next);
+            if (next !== p.short_description) {
+              p.short_description = next;
+              layoutFired = true;
+            }
+          }
+          if (layoutFired) appliedGuards.push('property_layout_scrub');
         }
         // Guard — name/title qualifier sync: the model drops a
         // qualifier from the structured name while keeping it in
